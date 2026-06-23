@@ -5,7 +5,7 @@
 #ifndef NPSAT_V2_FLOW_INPUT_H
 #define NPSAT_V2_FLOW_INPUT_H
 
-#include <boost/mpi.hpp>
+#include <deal.II/base/mpi.h>
 //#include <boost/program_options.hpp>
 
 #include "flow_structures.h"
