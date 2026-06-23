@@ -16,6 +16,8 @@
 
 #include "npsat_flow/flow_input.h"
 #include "npsat_flow/time_step_tracking.h"
+#include "npsat_flow/interpolation/interpolation_function.h"
+#include "npsat_flow/interpolation/interp_interface.h"
 
 using namespace dealii;
 
@@ -36,6 +38,8 @@ private:
   const unsigned int degree;
 
   const npsat_flow::user_options uo;
+
+  npsat_flow::InterpolationFunction<dim> gw_recharge;
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
@@ -91,6 +95,22 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   {// Time step
     time_tracking.read_delta_time_file(npsat_flow::resolve_relative_path(input_root, uo.sim_opt.delta_time_file));
     time_tracking.initialize(uo.sim_opt.n_steps,uo.sim_opt.Start_step);
+  }
+
+  {// Set up recharge
+    auto rch_interp = std::make_shared<npsat_flow::InterpInterface<dim>>();
+    if (!uo.sources.rch_file.empty())
+    {
+      rch_interp->read_master_file(uo.sources.rch_file,
+                                   uo.sources.rch_factor,
+                                   mpi_communicator,
+                                   input_root);
+    }
+    else
+    {
+      pcout << "Recharge data disabled: Sources.Rch_Data is empty." << std::endl;
+    }
+    gw_recharge.set_interpolant(rch_interp);
   }
 
 }
