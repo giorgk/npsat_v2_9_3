@@ -6,6 +6,9 @@
 SET(TARGET "npsat_v2")
 SET(TRACE_TARGET "npsat_trace")
 
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
+SET_PROPERTY(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
+
 # Declare all source files the target consists of. Here, this is only
 # the one step-X.cc file, but as you expand your project you may wish
 # to add other source files as well. If your project becomes much larger,
@@ -25,7 +28,7 @@ SET(TRACE_TARGET_SRC
 
 # Usually, you will not need to modify anything beyond this point...
 
-CMAKE_MINIMUM_REQUIRED(VERSION 3.5.0)
+CMAKE_MINIMUM_REQUIRED(VERSION 2.8.12)
 
 FIND_PACKAGE(deal.II 9.3.0
         HINTS ${deal.II_DIR} ${DEAL_II_DIR} ../ ../../ $ENV{DEAL_II_DIR}
