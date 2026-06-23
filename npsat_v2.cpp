@@ -15,6 +15,7 @@
 #include <fstream>
 
 #include "npsat_flow/flow_input.h"
+#include "npsat_flow/time_step_tracking.h"
 
 using namespace dealii;
 
@@ -28,6 +29,8 @@ public:
   void run();
 
 private:
+  void set_simulation_data();
+
   MPI_Comm mpi_communicator;
   parallel::distributed::Triangulation<dim> triangulation;
   const unsigned int degree;
@@ -36,8 +39,11 @@ private:
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
+  npsat_flow::TimeStepTracker time_tracking;
   unsigned int my_rank; ///< MPI rank of this process.
   unsigned int n_proc; ///< Total number of MPI ranks.
+
+
 };
 
 
@@ -65,7 +71,30 @@ template <int dim>
 void NPSAT_FLOW<dim>::run() {
   std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
   std::cout << Utilities::MPI::this_mpi_process(mpi_communicator) << std::endl;
+
+  set_simulation_data();
+
 }
+
+template<int dim>
+void NPSAT_FLOW<dim>::set_simulation_data() {
+  const std::string input_root = npsat_flow::join_paths(uo.main_path, uo.input_path);
+  const std::string output_root = npsat_flow::resolve_relative_path(uo.main_path, uo.output_path);
+
+  AssertThrow(!output_root.empty(),
+               ExcMessage("Paths.Output must resolve to a non-empty output directory."));
+  AssertThrow(npsat_flow::path_exists(output_root),
+              ExcMessage("Output directory does not exist: " + output_root));
+  AssertThrow(npsat_flow::path_is_directory(output_root),
+              ExcMessage("Output path is not a directory: " + output_root));
+
+  {// Time step
+    time_tracking.read_delta_time_file(npsat_flow::resolve_relative_path(input_root, uo.sim_opt.delta_time_file));
+    time_tracking.initialize(uo.sim_opt.n_steps,uo.sim_opt.Start_step);
+  }
+
+}
+
 
 
 
