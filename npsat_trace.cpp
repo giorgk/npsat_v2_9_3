@@ -8,6 +8,8 @@
 
 #include <iostream>
 
+#include "npsat_trace/trace_input.h"
+
 
 // namespace for general use:
 using namespace dealii;
@@ -15,24 +17,25 @@ using namespace dealii;
 template <int dim>
 class NPSAT_TRACE {
 public:
-  NPSAT_TRACE();
+  NPSAT_TRACE(const npsat_trace::Trace_options &topt_in);
   void run();
 private:
   MPI_Comm mpi_communicator;
   parallel::distributed::Triangulation<dim> triangulation;
-
+  npsat_trace::Trace_options topt;
   ConditionalOStream pcout;
   unsigned int my_rank;
   unsigned int n_proc;
 };
 
 template <int dim>
-NPSAT_TRACE<dim>::NPSAT_TRACE()
+NPSAT_TRACE<dim>::NPSAT_TRACE(const npsat_trace::Trace_options &topt_in)
   :
   mpi_communicator(MPI_COMM_WORLD)
   , triangulation(mpi_communicator,
                   typename Triangulation<dim>::MeshSmoothing(
                       Triangulation<dim>::smoothing_on_refinement))
+  , topt(topt_in)
   , pcout(std::cout,
              (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
 
@@ -53,7 +56,10 @@ int main(int argc, char **argv)
 {
   try {
     Utilities::MPI::MPI_InitFinalize mpi_initialization(argc,argv,1);
-    NPSAT_TRACE<3> npsat_trace;
+    npsat_trace::InputHandler input_handler;
+    if (!input_handler.read_ini(argc, argv))
+      return 0;
+    NPSAT_TRACE<3> npsat_trace(input_handler.tr_opt);
     npsat_trace.run();
   }
   catch (std::exception &exc)
