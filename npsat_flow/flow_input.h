@@ -6,13 +6,14 @@
 #define NPSAT_V2_FLOW_INPUT_H
 
 #include <deal.II/base/mpi.h>
-//#include <boost/program_options.hpp>
+#include <boost/program_options.hpp>
 
 #include "flow_structures.h"
 
 namespace npsat_flow {
 
     using namespace dealii;
+    namespace po = boost::program_options;
 
     class Input_ini {
     public:
@@ -35,7 +36,24 @@ namespace npsat_flow {
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
-        pcout << "Reading input file" << std::endl;
+        po::options_description commandLineOptions("Command line options");
+        commandLineOptions.add_options()
+            ("version,v", "print version information")
+            ("help,h", "Get a list of options in the configuration file")
+            ("config,c", po::value<std::string >(), "Set configuration file")
+            ;
+
+        po::variables_map vm_cmd;
+        po::store(po::parse_command_line(argc, argv, commandLineOptions), vm_cmd);
+
+        if (vm_cmd.empty())
+        {
+            pcout << " To run NPSAT_v2 specify the configuration file as" << std::endl;
+            pcout << "-c config" << std::endl << std::endl;;
+            pcout << "Other command line options are:" << std::endl;
+            pcout << commandLineOptions << std::endl;
+            return false;
+        }
 
         return true;
 
