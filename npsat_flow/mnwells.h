@@ -25,8 +25,6 @@ namespace npsat_flow {
     using WellValue = std::pair<Point2D, std::size_t>;
     using Polygon = bg::model::polygon<Point2D>;
 
-    static const std::vector<unsigned int> face_order = {0, 1, 3, 2};
-
     struct WellSegmentOut
     {
         // Geometry (each segment is vertical at x,y)

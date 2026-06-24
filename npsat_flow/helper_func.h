@@ -220,6 +220,8 @@ namespace npsat_flow{
         p_bot = N0*bot[0] + N1*bot[1] + N2*bot[2] + N3*bot[3];
     }
 
+
+
 }
 
 #endif //HELPER_FUNC_H

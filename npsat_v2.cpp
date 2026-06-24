@@ -4,9 +4,43 @@
 #include <deal.II/base/mpi.h>
 #include <deal.II/distributed/tria.h>
 #include <deal.II/distributed/fully_distributed_tria.h>
-#include  <deal.II/grid/grid_generator.h>
+#include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_out.h>
 
+#include <deal.II/base/conditional_ostream.h>
+#include  <deal.II/base/timer.h>
+
+#include <deal.II/fe/fe_system.h>
+#include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_raviart_thomas.h>
+#include <deal.II/fe/fe_dgq.h>
+#include <deal.II/fe/fe_trace.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/mapping_q1.h>
+
+#include <deal.II/dofs/dof_handler.h>
+#include <deal.II/dofs/dof_tools.h>
+#include <deal.II/dofs/dof_renumbering.h>
+
+#include <deal.II/lac/trilinos_sparse_matrix.h>
+#include <deal.II/lac/trilinos_sparsity_pattern.h>
+#include <deal.II/lac/trilinos_vector.h>
+#include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/trilinos_solver.h>
+#include <deal.II/lac/block_sparsity_pattern.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/sparsity_tools.h>
+#include <deal.II/lac/trilinos_block_sparse_matrix.h>
+#include <deal.II/lac/trilinos_parallel_block_vector.h>
+#include <deal.II/lac/solver_cg.h>
+#include <deal.II/lac/lapack_full_matrix.h>
+
+#include <deal.II/numerics/vector_tools.h>
+#include <deal.II/lac/trilinos_precondition.h>
+#include <deal.II/numerics/data_out.h>
+
+#include  <deal.II/grid/grid_out.h>
+#include <deal.II/base/utilities.h>
 #include <deal.II/base/conditional_ostream.h>
 #include  <deal.II/base/timer.h>
 
@@ -22,6 +56,9 @@
 #include "npsat_flow/streams.h"
 #include "npsat_flow/mnwells.h"
 #include "npsat_flow/BC/dirichlet_bc.h"
+#include "npsat_flow/BC/ghb_bc.h"
+#include "npsat_flow/mesh_gen.h"
+#include "npsat_flow/local_element_data.h"
 
 using namespace dealii;
 
@@ -36,10 +73,53 @@ public:
 
 private:
   void set_simulation_data();
+  void refine_triangulation();
+  void initialize_local_cell_slots();
+  void setup_system();
+
+  std::string output_root_path() const;
+  std::string output_prefix_path() const;
+  void write_final_mesh_with_properties() const;
 
   MPI_Comm mpi_communicator;
   parallel::distributed::Triangulation<dim> triangulation;
   const unsigned int degree;
+
+  // Physical units:
+  // h [L]           // Head (length, e.g., meters)
+  // q [L/T]         // Flux (velocity, e.g., m/day)
+  // Λ [L]           // Trace = head on faces (meters)
+  // Mathematical function spaces:
+  // h ∈ L²(Ω)       // Square-integrable functions
+  // q ∈ H(div, Ω)   // Functions with square-integrable divergence
+  // Λ ∈ L²(∂K)      // Square-integrable on faces
+  const FE_RaviartThomas<dim> fe_flux;    ///< RT element for flux in H(div).
+  const FE_DGQ<dim> fe_head;              ///< DG element for cell-centered hydraulic head.
+  const FE_FaceQ<dim> fe_trace;           ///< Face element for hybrid trace head lambda.
+
+  DoFHandler<dim> dof_handler_flux; ///< DoF handler for flux unknowns.
+  DoFHandler<dim> dof_handler_head; ///< DoF handler for cell head unknowns.
+  DoFHandler<dim> dof_handler_trace; ///< DoF handler for trace-head unknowns.
+
+  TrilinosWrappers::MPI::Vector solution_trace; ///< Solved trace-head vector with relevant ghost entries.
+
+  TrilinosWrappers::BlockSparseMatrix     block_system_matrix; ///< Global block matrix for trace and well unknowns.
+  TrilinosWrappers::MPI::BlockVector       block_rhs_vector; ///< Global block right-hand side for trace and well rows.
+  TrilinosWrappers::MPI::BlockVector       block_solution; ///< Block solution containing trace and well values.
+  TrilinosWrappers::MPI::Vector       well_solution; ///< Owned well-head solution values.
+  TrilinosWrappers::MPI::Vector well_solution_ghosted; ///< Well-head values with ghost entries for segment calculations.
+
+  IndexSet lambda_locally_owned_dofs; ///< Locally owned trace-head DoFs.
+  IndexSet lambda_locally_relevant_dofs; ///< Locally relevant trace-head DoFs including ghosts.
+  IndexSet flux_locally_owned_dofs; ///< Locally owned flux DoFs.
+  IndexSet flux_locally_relevant_dofs; ///< Locally relevant flux DoFs including ghosts.
+  IndexSet head_locally_owned_dofs; ///< Locally owned head DoFs.
+  IndexSet head_locally_relevant_dofs; ///< Locally relevant head DoFs including ghosts.
+  IndexSet well_locally_owned_dofs; ///< Locally owned global well ids modeled as algebraic DoFs.
+  IndexSet well_locally_relevant_dofs; ///< Locally relevant well ids needed by local well-cell links.
+
+  AffineConstraints<double> lambda_constraints; ///< Dirichlet constraints applied to trace-head DoFs.
+
 
   const npsat_flow::user_options uo;
 
@@ -51,6 +131,11 @@ private:
   npsat_flow::DirichletBoundary<dim> dirichlet_bc; ///< Parsed Dirichlet boundary condition definitions.
   std::map<types::boundary_id, const Function<dim> *> dirichlet_boundary_map; ///< Boundary id to Dirichlet function lookup.
 
+  npsat_flow::GHBBoundary<dim> ghb_bc; ///< Parsed general-head-boundary condition definitions.
+  std::map<types::boundary_id, npsat_flow::GHBFunctionPair<dim>> ghb_boundary_map; ///< Boundary id to GHB head/conductance functions.
+
+  npsat_flow::LocalElementDataRT0DG0 local_element_data_rt_0dg0;
+
   ConditionalOStream pcout;
   TimerOutput computing_timer;
   npsat_flow::TimeStepTracker time_tracking;
@@ -59,6 +144,18 @@ private:
 
 
 };
+
+template <int dim>
+std::string NPSAT_FLOW<dim>::output_root_path() const
+{
+  return npsat_flow::resolve_relative_path(uo.main_path, uo.output_path);
+}
+
+template <int dim>
+std::string NPSAT_FLOW<dim>::output_prefix_path() const
+{
+  return npsat_flow::join_paths(output_root_path(), uo.output_prefix);
+}
 
 
 template <int dim>
@@ -69,6 +166,12 @@ NPSAT_FLOW<dim>::NPSAT_FLOW(const unsigned int degree, const npsat_flow::user_op
                   typename Triangulation<dim>::MeshSmoothing(
                       Triangulation<dim>::smoothing_on_refinement))
   , degree(degree)
+  , fe_flux(degree)
+  , fe_head(degree)
+  , fe_trace(degree)
+  , dof_handler_flux(triangulation)
+  , dof_handler_head(triangulation)
+  , dof_handler_trace(triangulation)
   , uo(uo_in)
   , pcout(std::cout,
            (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
@@ -81,131 +184,31 @@ NPSAT_FLOW<dim>::NPSAT_FLOW(const unsigned int degree, const npsat_flow::user_op
   n_proc = Utilities::MPI::n_mpi_processes(mpi_communicator);
 }
 
+#include "npsat_flow/main_class_impl/npsat_flow_prepare.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_setup.impl.h"
+
 template <int dim>
 void NPSAT_FLOW<dim>::run() {
   std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
   std::cout << Utilities::MPI::this_mpi_process(mpi_communicator) << std::endl;
 
   set_simulation_data();
-
-}
-
-template<int dim>
-void NPSAT_FLOW<dim>::set_simulation_data() {
-  const std::string input_root = npsat_flow::join_paths(uo.main_path, uo.input_path);
-  const std::string output_root = npsat_flow::resolve_relative_path(uo.main_path, uo.output_path);
-
-  AssertThrow(!output_root.empty(),
-               ExcMessage("Paths.Output must resolve to a non-empty output directory."));
-  AssertThrow(npsat_flow::path_exists(output_root),
-              ExcMessage("Output directory does not exist: " + output_root));
-  AssertThrow(npsat_flow::path_is_directory(output_root),
-              ExcMessage("Output path is not a directory: " + output_root));
-
-  {// Time step
-    time_tracking.read_delta_time_file(npsat_flow::resolve_relative_path(input_root, uo.sim_opt.delta_time_file));
-    time_tracking.initialize(uo.sim_opt.n_steps,uo.sim_opt.Start_step);
-  }
-
-  {// Set up recharge
-    auto rch_interp = std::make_shared<npsat_flow::InterpInterface<dim>>();
-    if (!uo.sources.rch_file.empty())
-    {
-      rch_interp->read_master_file(uo.sources.rch_file,
-                                   uo.sources.rch_factor,
-                                   mpi_communicator,
-                                   input_root);
-    }
-    else
-    {
-      pcout << "Recharge data disabled: Sources.Rch_Data is empty." << std::endl;
-    }
-    gw_recharge.set_interpolant(rch_interp);
-  }
-
-  {// Set up hydrogeology data
-    hgeo_prop.read(uo, mpi_communicator);
-  }
-
+  if (uo.print_mesh_exit)
   {
-    std::cout << "Recharge: " << gw_recharge.value(Point<dim>(2500,2500,0)) << std::endl;
-    std::cout << "Kx: " << hgeo_prop.conductivity(Point<dim>(2500,2500,0)) << std::endl;
-    std::cout << "Ss: " << hgeo_prop.specific_storage(Point<dim>(2500,2500,0)) << std::endl;
-    std::cout << "Sy: " << hgeo_prop.specific_yield(Point<dim>(2500,2500,0)) << std::endl;
-
+    pcout << "Output.Print_mesh_exit enabled: exiting after initial mesh output." << std::endl;
+    return;
   }
 
-  {// Streams
-    streams.stream_multiplier = uo.sources.stream_factor;
-    if (!uo.sources.stream_file.empty() && !uo.sources.stream_rates_file.empty())
-    {
-      streams.read_streams(npsat_flow::resolve_relative_path(input_root, uo.sources.stream_file),
-                           npsat_flow::resolve_relative_path(input_root, uo.sources.stream_rates_file),
-                           mpi_communicator);
-    }
-    else
-    {
-      streams.clear();
-      pcout << "Stream data disabled: Sources.Stream_Data or Sources.Stream_Rates is empty." << std::endl;
-    }
-  }
-
-  {// Wells
-    if (!uo.sources.well_file.empty())
-    {
-      npsat_flow::rank0_read_wells_distributes(npsat_flow::resolve_relative_path(input_root, uo.sources.well_file),
-                                             mnwells,
-                                             mpi_communicator);
-      if (!uo.sources.well_rates_file.empty())
-      {
-        mnwells.Q_ts.read_data(npsat_flow::resolve_relative_path(input_root, uo.sources.well_rates_file),
-                               mpi_communicator);
-      }
-      else
-      {
-        std::vector<double> zero_rates(mnwells.wells.size(), 0.0);
-        mnwells.Q_ts.set_data_owned(std::move(zero_rates),
-                                    static_cast<std::int64_t>(mnwells.wells.size()),
-                                    1);
-        pcout << "Well pumping disabled: Sources.Well_Rates is empty." << std::endl;
-      }
-    }
-    else
-    {
-      mnwells.wells.clear();
-      mnwells.well_rtree.clear();
-      mnwells.Q_ts.set_data_owned(std::vector<double>(), 0, 0);
-      pcout << "Wells disabled: Sources.Well_Data is empty." << std::endl;
-    }
-    pcout << "wells loaded: " << mnwells.wells.size() << std::endl;
-    std::cout << "Rank " << my_rank << " has " << mnwells.wells.size() << std::endl;
-  }
-
-  {// Dirichlet boundary conditions
-    if (!uo.bndr_cond.dirichlet_file.empty()) {
-      dirichlet_bc.set_lateral_matching_tolerances(uo.bndr_cond.half_with, uo.bndr_cond.min_overlap);
-
-      dirichlet_bc.read_data(uo.bndr_cond.dirichlet_file,
-                             1.0,
-                             mpi_communicator,
-                             17,
-                             input_root);
-
-      pcout << "Dirichlet boundary data loaded: "
-            << dirichlet_bc.get_parts().size()
-            << " entries"
-            << std::endl;
-
-    }
-  }
-
-
-
-
-
-
+  setup_system();
 
 }
+
+
+
+
+
+
+
 
 
 

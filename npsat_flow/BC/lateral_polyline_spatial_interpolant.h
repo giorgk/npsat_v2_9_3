@@ -110,8 +110,7 @@ namespace npsat_flow {
                 polyline_points[i] = p;
             }
 
-            ids.assign(n_stored_layers,
-                       std::vector<int>(n_points, invalid_id));
+            ids.assign(n_stored_layers,std::vector<int>(n_points, -1));
 
             interfaces.assign(n_input_layers > 0 ? n_input_layers - 1 : 0,
                               std::vector<double>(n_points, 0.0));
@@ -235,7 +234,7 @@ namespace npsat_flow {
             double weight = 0.0;
         };
 
-        static constexpr int invalid_id = -1;
+        //static const int invalid_id = -1;
 
         std::vector<Point<dim>> polyline_points;
         std::vector<double> station;

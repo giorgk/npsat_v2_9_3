@@ -8,6 +8,9 @@
 #define NPSAT_V2_FLOW_STRUCTURES_H
 
 namespace npsat_flow {
+
+    static const std::vector<unsigned int> face_order = {0, 1, 3, 2};
+
     struct Refinement_options
     {
         int initial = 0;

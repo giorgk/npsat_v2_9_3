@@ -13,6 +13,7 @@
 #include "constant_interpolation.h"
 #include "gridded_interpolation.h"
 #include "scatter_interpolation.h"
+#include "../BC/lateral_polyline_spatial_interpolant.h"
 
 
 namespace npsat_flow{
@@ -283,10 +284,10 @@ namespace npsat_flow{
         if (interp_type == "LATERAL_POLYLINE" ||
             interp_type == "LATERAL")
         {
-            // return std::make_unique<LateralPolylineSpatialInterpolant<dim>>(
-            //     std::move(region),
-            //     lateral_polyline_half_width,
-            //     lateral_polyline_min_overlap);
+             return std::make_unique<LateralPolylineSpatialInterpolant<dim>>(
+                 std::move(region),
+                 lateral_polyline_half_width,
+                 lateral_polyline_min_overlap);
         }
 
         return nullptr;
