@@ -156,6 +156,35 @@ namespace npsat_flow {
         NonlinearControls NLC;
     };
 
+    template <typename T>
+    struct MatrixView
+    {
+        static_assert(std::is_arithmetic<T>::value, "MatrixView<T>: T must be arithmetic.");
+        T *data = nullptr;
+        std::int64_t nrows = 0;
+        std::int64_t ncols = 0;
+
+        inline T &operator()(std::int64_t i, std::int64_t j)
+        {
+            return data[static_cast<std::size_t>(i) * static_cast<std::size_t>(ncols) +
+                        static_cast<std::size_t>(j)];
+        }
+
+        inline const T &operator()(std::int64_t i, std::int64_t j) const
+        {
+            return data[static_cast<std::size_t>(i) * static_cast<std::size_t>(ncols) +
+                        static_cast<std::size_t>(j)];
+        }
+        inline bool empty() const { return (data == nullptr) || (nrows == 0) || (ncols == 0); }
+    };
+
+    struct ScreenClip
+    {
+        double z_low = 0.0;
+        double z_high = 0.0;
+        double L = 0.0;
+    };
+
 }
 
 #endif //NPSAT_V2_FLOW_STRUCTURES_H

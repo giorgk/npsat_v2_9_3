@@ -10,6 +10,8 @@
 #include <vector>
 #include <fstream>
 
+#include "flow_structures.h"
+
 namespace npsat_flow{
     //using namespace dealii;
 
@@ -139,6 +141,83 @@ namespace npsat_flow{
     {
         struct stat path_info;
         return stat(path.c_str(), &path_info) == 0 && S_ISDIR(path_info.st_mode);
+    }
+
+    template <typename T>
+    inline T clamp_(T value, T lo, T hi)
+    {
+        return std::max(lo, std::min(value, hi));
+    }
+
+    inline ScreenClip well_length_inside_cell(double w_bottom, double w_top, double p_bot, double p_top)
+    {
+        ScreenClip c;
+        c.z_low  = std::max(w_bottom, p_bot);
+        c.z_high = std::min(w_top,   p_top);
+        c.L      = c.z_high - c.z_low;
+        if (c.L <= 0.0)
+            c = ScreenClip{};
+        return c;
+    }
+
+    inline void interpolate_top_bottom(
+        const std::vector<double> &X,
+        const std::vector<double> &Y,
+        const std::vector<double> &top,
+        const std::vector<double> &bot,
+        double x, double y,
+        double &p_top, double &p_bot)
+    {
+        // Solve for (u, v) using Newton iteration on bilinear mapping
+        double u = 0.5, v = 0.5; // good initial guess
+
+        for (int iter = 0; iter < 5; ++iter)
+        {
+            // Shape functions
+            double N0 = (1-u)*(1-v);
+            double N1 = u*(1-v);
+            double N2 = u*v;
+            double N3 = (1-u)*v;
+
+            // Mapped x,y
+            double xx = N0*X[0] + N1*X[1] + N2*X[2] + N3*X[3];
+            double yy = N0*Y[0] + N1*Y[1] + N2*Y[2] + N3*Y[3];
+
+            // Residuals
+            double rx = xx - x;
+            double ry = yy - y;
+
+            // Derivatives wrt u
+            double dN0du = -(1-v);
+            double dN1du = (1-v);
+            double dN2du = v;
+            double dN3du = -v;
+
+            // Derivatives wrt v
+            double dN0dv = -(1-u);
+            double dN1dv = -u;
+            double dN2dv = u;
+            double dN3dv = (1-u);
+            double dxdu = dN0du*X[0] + dN1du*X[1] + dN2du*X[2] + dN3du*X[3];
+            double dydu = dN0du*Y[0] + dN1du*Y[1] + dN2du*Y[2] + dN3du*Y[3];
+            double dxdv = dN0dv*X[0] + dN1dv*X[1] + dN2dv*X[2] + dN3dv*X[3];
+            double dydv = dN0dv*Y[0] + dN1dv*Y[1] + dN2dv*Y[2] + dN3dv*Y[3];
+
+            // Solve 2x2 system for du, dv
+            double det = dxdu*dydv - dydu*dxdv;
+            double du = (-rx*dydv + ry*dxdv) / det;
+            double dv = (-dxdu*ry + dydu*rx) / det; u += du; v += dv;
+        }
+
+        // Final shape functions
+        double N0 = (1-u)*(1-v);
+        double N1 = u*(1-v);
+        double N2 = u*v;
+        double N3 = (1-u)*v;
+
+        // Interpolate top and bottom
+        p_top = N0*top[0] + N1*top[1] + N2*top[2] + N3*top[3];
+        p_bot = N0*bot[0] + N1*bot[1] + N2*bot[2] + N3*bot[3];
     }
 
 }

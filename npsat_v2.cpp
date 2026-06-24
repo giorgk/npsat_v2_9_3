@@ -18,6 +18,9 @@
 #include "npsat_flow/time_step_tracking.h"
 #include "npsat_flow/interpolation/interpolation_function.h"
 #include "npsat_flow/interpolation/interp_interface.h"
+#include "npsat_flow/hydrogeo_prop.h"
+#include "npsat_flow/streams.h"
+#include "npsat_flow/mnwells.h"
 
 using namespace dealii;
 
@@ -40,6 +43,9 @@ private:
   const npsat_flow::user_options uo;
 
   npsat_flow::InterpolationFunction<dim> gw_recharge;
+  npsat_flow::HydraulicProperties<dim> hgeo_prop;
+  npsat_flow::StreamCollection<dim> streams;
+  npsat_flow::MNWellCollection mnwells;
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
@@ -112,6 +118,70 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
     }
     gw_recharge.set_interpolant(rch_interp);
   }
+
+  {// Set up hydrogeology data
+    hgeo_prop.read(uo, mpi_communicator);
+  }
+
+  {
+    std::cout << "Recharge: " << gw_recharge.value(Point<dim>(2500,2500,0)) << std::endl;
+    std::cout << "Kx: " << hgeo_prop.conductivity(Point<dim>(2500,2500,0)) << std::endl;
+    std::cout << "Ss: " << hgeo_prop.specific_storage(Point<dim>(2500,2500,0)) << std::endl;
+    std::cout << "Sy: " << hgeo_prop.specific_yield(Point<dim>(2500,2500,0)) << std::endl;
+
+  }
+
+  {// Streams
+    streams.stream_multiplier = uo.sources.stream_factor;
+    if (!uo.sources.stream_file.empty() && !uo.sources.stream_rates_file.empty())
+    {
+      streams.read_streams(npsat_flow::resolve_relative_path(input_root, uo.sources.stream_file),
+                           npsat_flow::resolve_relative_path(input_root, uo.sources.stream_rates_file),
+                           mpi_communicator);
+    }
+    else
+    {
+      streams.clear();
+      pcout << "Stream data disabled: Sources.Stream_Data or Sources.Stream_Rates is empty." << std::endl;
+    }
+  }
+
+  {// Wells
+    if (!uo.sources.well_file.empty())
+    {
+      npsat_flow::rank0_read_wells_distributes(npsat_flow::resolve_relative_path(input_root, uo.sources.well_file),
+                                             mnwells,
+                                             mpi_communicator);
+      if (!uo.sources.well_rates_file.empty())
+      {
+        mnwells.Q_ts.read_data(npsat_flow::resolve_relative_path(input_root, uo.sources.well_rates_file),
+                               mpi_communicator);
+      }
+      else
+      {
+        std::vector<double> zero_rates(mnwells.wells.size(), 0.0);
+        mnwells.Q_ts.set_data_owned(std::move(zero_rates),
+                                    static_cast<std::int64_t>(mnwells.wells.size()),
+                                    1);
+        pcout << "Well pumping disabled: Sources.Well_Rates is empty." << std::endl;
+      }
+    }
+    else
+    {
+      mnwells.wells.clear();
+      mnwells.well_rtree.clear();
+      mnwells.Q_ts.set_data_owned(std::vector<double>(), 0, 0);
+      pcout << "Wells disabled: Sources.Well_Data is empty." << std::endl;
+    }
+    pcout << "wells loaded: " << mnwells.wells.size() << std::endl;
+    std::cout << "Rank " << my_rank << " has " << mnwells.wells.size() << std::endl;
+  }
+
+
+
+
+
+
 
 }
 
