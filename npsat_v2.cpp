@@ -21,6 +21,7 @@
 #include "npsat_flow/hydrogeo_prop.h"
 #include "npsat_flow/streams.h"
 #include "npsat_flow/mnwells.h"
+#include "npsat_flow/BC/dirichlet_bc.h"
 
 using namespace dealii;
 
@@ -46,6 +47,9 @@ private:
   npsat_flow::HydraulicProperties<dim> hgeo_prop;
   npsat_flow::StreamCollection<dim> streams;
   npsat_flow::MNWellCollection mnwells;
+
+  npsat_flow::DirichletBoundary<dim> dirichlet_bc; ///< Parsed Dirichlet boundary condition definitions.
+  std::map<types::boundary_id, const Function<dim> *> dirichlet_boundary_map; ///< Boundary id to Dirichlet function lookup.
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
@@ -175,6 +179,24 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
     }
     pcout << "wells loaded: " << mnwells.wells.size() << std::endl;
     std::cout << "Rank " << my_rank << " has " << mnwells.wells.size() << std::endl;
+  }
+
+  {// Dirichlet boundary conditions
+    if (!uo.bndr_cond.dirichlet_file.empty()) {
+      dirichlet_bc.set_lateral_matching_tolerances(uo.bndr_cond.half_with, uo.bndr_cond.min_overlap);
+
+      dirichlet_bc.read_data(uo.bndr_cond.dirichlet_file,
+                             1.0,
+                             mpi_communicator,
+                             17,
+                             input_root);
+
+      pcout << "Dirichlet boundary data loaded: "
+            << dirichlet_bc.get_parts().size()
+            << " entries"
+            << std::endl;
+
+    }
   }
 
 
