@@ -13,7 +13,7 @@
 #include "flow_structures.h"
 
 namespace npsat_flow{
-    //using namespace dealii;
+    using namespace dealii;
 
     inline bool parse_double_or_file(const std::string& input, double& value, std::string& filename)
     {
@@ -218,6 +218,28 @@ namespace npsat_flow{
         // Interpolate top and bottom
         p_top = N0*top[0] + N1*top[1] + N2*top[2] + N3*top[3];
         p_bot = N0*bot[0] + N1*bot[1] + N2*bot[2] + N3*bot[3];
+    }
+
+    static void expand_trace_by_constraints(
+        const types::global_dof_index        i,
+        const AffineConstraints<double>     &constraints,
+        std::vector<types::global_dof_index> &out)
+    {
+        out.clear();
+
+        if (!constraints.is_constrained(i))
+        {
+            out.push_back(i);
+            return;
+        }
+
+        const auto *entries = constraints.get_constraint_entries(i);
+        if (entries == nullptr || entries->empty())
+            return; // no structural coupling to add
+
+        out.reserve(entries->size());
+        for (const auto &e : *entries)
+            out.push_back(e.first); // master dof
     }
 
 

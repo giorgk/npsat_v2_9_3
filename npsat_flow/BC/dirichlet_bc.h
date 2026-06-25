@@ -227,6 +227,8 @@ namespace npsat_flow {
             std::map<types::boundary_id, const Function<dim> *> &function_map,
             const types::boundary_id first_custom_id = 17)
         {
+            (void)first_custom_id;
+            (void)function_map;
             // {//TODO Maybe the top and bottom boundary ids are not needed anymore
             //     top_boundary_ids.clear();
             //     bottom_boundary_ids.clear();

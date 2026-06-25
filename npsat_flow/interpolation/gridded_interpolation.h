@@ -209,6 +209,7 @@ namespace npsat_flow{
               if (z >= z_interface)
                   return static_cast<int>(k);
           }
+          return static_cast<int>(grid.nlay - 1);
       }
 
         int find_id(const Point<dim> &p) const

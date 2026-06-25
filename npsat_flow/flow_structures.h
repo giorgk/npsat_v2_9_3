@@ -8,6 +8,7 @@
 #define NPSAT_V2_FLOW_STRUCTURES_H
 
 namespace npsat_flow {
+    using namespace dealii;
 
     static const std::vector<unsigned int> face_order = {0, 1, 3, 2};
 
@@ -186,6 +187,40 @@ namespace npsat_flow {
         double z_low = 0.0;
         double z_high = 0.0;
         double L = 0.0;
+    };
+
+    struct WellRef
+    {
+        unsigned int well_id;    // global well DoF id (0..n_wells-1)
+        unsigned int well_rank;  // owner rank of that well DoF
+    };
+
+    struct TraceRef
+    {
+        types::global_dof_index trace_id;   // global trace DoF id
+        unsigned int            trace_rank; // owner rank of that trace DoF
+    };
+
+    struct TraceWellEdgeMsg
+    {
+        types::global_dof_index trace_id;
+        unsigned int            well_id;
+        unsigned int            well_rank; // owner of well_id
+
+        template <class Archive>
+        void serialize(Archive &ar, const unsigned int)
+        { ar & trace_id; ar & well_id; ar & well_rank; }
+    };
+
+    struct WellTraceEdgeMsg
+    {
+        unsigned int            well_id;
+        types::global_dof_index trace_id;
+        unsigned int            trace_rank; // owner of trace_id
+
+        template <class Archive>
+        void serialize(Archive &ar, const unsigned int)
+        { ar & well_id; ar & trace_id; ar & trace_rank; }
     };
 
 }

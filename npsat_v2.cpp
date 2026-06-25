@@ -59,6 +59,8 @@
 #include "npsat_flow/BC/ghb_bc.h"
 #include "npsat_flow/mesh_gen.h"
 #include "npsat_flow/local_element_data.h"
+#include "npsat_flow/dof_ownership.h"
+#include "npsat_flow//mpi_helpers.h"
 
 using namespace dealii;
 
@@ -75,7 +77,13 @@ private:
   void set_simulation_data();
   void refine_triangulation();
   void initialize_local_cell_slots();
+
   void setup_system();
+  void apply_trace_boundary_conditions();
+  void setup_local_cell_well_link();
+  void setup_well_index_sets_by_segments();
+  void update_local_cell_well_link_owners();
+  void build_trace_well_coupling_maps();
 
   std::string output_root_path() const;
   std::string output_prefix_path() const;
@@ -119,6 +127,7 @@ private:
   IndexSet well_locally_relevant_dofs; ///< Locally relevant well ids needed by local well-cell links.
 
   AffineConstraints<double> lambda_constraints; ///< Dirichlet constraints applied to trace-head DoFs.
+  npsat_flow::OwnershipManager lambda_ownership; ///< Cached trace-DoF ownership lookup for routing MPI contributions.
 
 
   const npsat_flow::user_options uo;
@@ -127,6 +136,12 @@ private:
   npsat_flow::HydraulicProperties<dim> hgeo_prop;
   npsat_flow::StreamCollection<dim> streams;
   npsat_flow::MNWellCollection mnwells;
+  std::vector<std::pair<unsigned int, std::vector<npsat_flow::CellWellLink>>> local_cell_well_map; ///< Owned-cell to intersecting-well segment links.
+  std::vector<std::pair<unsigned int, std::string>> local_cell_id_strings; ///< Stable CellId strings keyed by active cell index.
+  std::vector<unsigned int> well_owner_rank; ///< MPI owner rank for each global well id.
+  npsat_flow::SortedVectorMap<types::global_dof_index, std::vector<npsat_flow::WellRef>>  trace_to_well_dof; ///< Locally owned trace DoF to coupled well references.
+  npsat_flow::SortedVectorMap<unsigned int, std::vector<npsat_flow::TraceRef>> well_to_trace_dof; ///< Locally owned well id to coupled trace references.
+
 
   npsat_flow::DirichletBoundary<dim> dirichlet_bc; ///< Parsed Dirichlet boundary condition definitions.
   std::map<types::boundary_id, const Function<dim> *> dirichlet_boundary_map; ///< Boundary id to Dirichlet function lookup.

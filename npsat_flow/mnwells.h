@@ -7,23 +7,21 @@
 #include <deal.II/base/point.h>
 #include <deal.II/grid/tria_description.h>
 
-#include <boost/geometry.hpp>
-#include <boost/geometry/geometries/point_xy.hpp>
-#include <boost/geometry/geometries/polygon.hpp>
 #include <boost/geometry/index/rtree.hpp>
 
 #include "TimeSeries.h"
 #include "flow_structures.h"
 #include "helper_func.h"
+#include "boost_helper_func.h"
 
 namespace npsat_flow {
     using namespace dealii;
 
-    namespace bg = boost::geometry;
-    namespace bgi = boost::geometry::index;
-    using Point2D = bg::model::point<double, 2, bg::cs::cartesian>;
-    using WellValue = std::pair<Point2D, std::size_t>;
-    using Polygon = bg::model::polygon<Point2D>;
+    //namespace bg = boost::geometry;
+    //namespace bgi = boost::geometry::index;
+    //using Point2D = bg::model::point<double, 2, bg::cs::cartesian>;
+    //using WellValue = std::pair<Point2D, std::size_t>;
+    //using Polygon = bg::model::polygon<Point2D>;
 
     struct WellSegmentOut
     {
@@ -432,6 +430,242 @@ namespace npsat_flow {
 
         }
     }
+
+    // Helper functions related to MNW
+    template<int dim>
+    void calc_ro(typename DoFHandler<dim>::active_cell_iterator& cell, double& ro, double& b )
+    {
+        Point<dim> v0 = cell->vertex(0);
+        Point<dim> v1 = cell->vertex(1);
+        Point<dim> v2 = cell->vertex(2);
+        Point<dim> v4 = cell->vertex(4);
+
+        double dx2 = 0.0, dy2 = 0.0;
+        for (unsigned int d = 0; d < std::min<unsigned int>(2, dim); ++d)
+        {
+            dx2 += (v1[d] - v0[d]) * (v1[d] - v0[d]);
+            dy2 += (v2[d] - v0[d]) * (v2[d] - v0[d]);
+        }
+        const double dx = std::sqrt(dx2);
+        const double dy = std::sqrt(dy2);
+
+        // MNW2 eq. (5): ro = 0.14 * sqrt(dx^2 + dy^2)  :contentReference[oaicite:4]{index=4}
+        ro = 0.14 * std::sqrt(dx*dx + dy*dy);
+
+        b = v4[2] - v0[2];
+        double min_thickness = 1e-12;
+        AssertThrow(b > min_thickness, ExcMessage("Invalid cell geometry: cell thickness = " +
+               Utilities::to_string(b) + ". Expected vertex 4 to be above vertex 0."));
+    }
+
+    inline double compute_CWC_MNW2(double K, double b, double bw, double rw, double ro, double Kskin, double Rskin)
+    {
+        // Eq. 9 Skin term
+        const double skin = ((K * b) / (Kskin * bw) - 1.0) * std::log(Rskin / rw);
+        // Eq. 8 + Eq. 10
+        const double numerator   = 2.0 * numbers::PI * b * K;
+        const double denominator = std::log(ro / rw) + skin;
+        return numerator / denominator;
+    }
+
+    inline void print_cell_well_map_csv(
+        const std::string &prefix,
+        const std::vector<std::pair<unsigned int, std::vector<CellWellLink>>> &local_cell_well_map,
+        const int my_rank)
+    {
+        // Construct filename
+        const std::string filename =
+            prefix + "_cell_well_" + std::to_string(my_rank) + ".csv";
+
+        std::ofstream out(filename);
+        AssertThrow(out.good(), ExcMessage("Cannot open file: " + filename));
+
+        // ---------------------------------------------------------------------
+        // CSV header
+        // ---------------------------------------------------------------------
+        out << "cell_index,"
+            << "well_index,"
+            << "well_rank,"
+            << "cwc,"
+            << "sl,"
+            << "ze";
+        for (unsigned int i = 0; i < 6; ++i)
+            out << ",tr_dof" << i;
+
+        out << '\n';
+
+        // ---------------------------------------------------------------------
+        // Data
+        // ---------------------------------------------------------------------
+        for (const auto &cell_entry : local_cell_well_map)
+        {
+            const unsigned int cell_index = cell_entry.first;
+            const auto &links = cell_entry.second;
+
+            for (const auto &link : links)
+            {
+                // Defensive check: you stated this is always 6
+                AssertThrow(link.trace_dof_indices.size() == 6,
+                            ExcMessage("Expected exactly 6 trace DoFs"));
+
+                out << cell_index << ","
+                    << link.well_global_index << ","
+                    << link.well_owner_rank << ","
+                    << link.cwc << ","
+                    << link.sl << ","
+                    << link.ze;
+
+                for (unsigned int i = 0; i < 6; ++i)
+                    out << "," << link.trace_dof_indices[i];
+
+                out << '\n';
+            }
+        }
+
+        out.close();
+    }
+
+
+    template <typename Key, typename T> class SortedVectorMap {
+    public:
+        SortedVectorMap() = default;
+        // Reserve upfront if you know the size
+        explicit SortedVectorMap(std::size_t n) { vec.reserve(n); }
+
+        // Insert a new key/value pair (duplicates allowed until sorted)
+        void insert(Key key, const T& value)
+        {
+            vec.emplace_back(key, value);
+            sorted = false;
+        }
+
+        // Sort by key (must be called before lookup)
+        void sort()
+        {
+            std::sort(vec.begin(), vec.end(),
+                [](auto& a, auto& b)
+                {
+                    return a.first < b.first;
+                });
+
+            // Optionally remove duplicates (keep first occurrence)
+            vec.erase(std::unique(vec.begin(), vec.end(),
+                [](auto& a, auto& b)
+                {
+                    return a.first == b.first;
+                }), vec.end());
+            sorted = true;
+        }
+
+        // Lookup by key, returns pointer or nullptr
+        const T* find(Key key) const
+        {
+            AssertThrow(sorted, ExcMessage("SortedVectorMap::find() called before sort()."));
+
+            auto it = std::lower_bound(
+                vec.begin(), vec.end(), key,
+                [](auto& a, int key) { return a.first < key; });
+            if (it != vec.end() && it->first == key)
+                return &it->second;
+            return nullptr;
+        }
+
+        // Convenience: throws if not found
+        const T& at(Key key) const
+        {
+            const T* p = find(key);
+            if (!p) throw std::out_of_range("Key not found");
+            return *p;
+        }
+
+        bool contains(Key key) const
+        {
+            return find(key) != nullptr;
+        }
+
+        std::size_t size() const
+        {
+            return vec.size();
+        }
+
+        const std::vector<std::pair<Key,T>>& data() const { return vec; }
+
+        void print_data(const std::string &prefix,
+                        const int my_rank) const;
+
+    private:
+        std::vector<std::pair<Key, T>> vec;
+        mutable bool sorted = false;
+
+
+
+    };
+
+    template <>
+    inline void
+    SortedVectorMap<types::global_dof_index,
+                    std::vector<npsat_flow::WellRef>>
+    ::print_data(const std::string &prefix,
+                 const int my_rank) const
+    {
+        const std::string filename = prefix + "_trace_to_well_" + std::to_string(my_rank) + ".csv";
+
+        std::ofstream out(filename);
+        AssertThrow(out.good(),
+                    ExcMessage("Could not open file: " + filename));
+
+        // CSV header
+        out << "tr_dof,well_dof,well_rank\n";
+
+        // Data
+        for (const auto &kv : vec)
+        {
+            const types::global_dof_index tr_dof = kv.first;
+
+            for (const auto &wr : kv.second)
+            {
+                out << tr_dof << ","
+                    << wr.well_id << ","
+                    << wr.well_rank << "\n";
+            }
+        }
+
+        out.close();
+    }
+
+    template <>
+    inline void
+    SortedVectorMap<unsigned int,
+                    std::vector<npsat_flow::TraceRef>>
+    ::print_data(const std::string &prefix,
+                 const int my_rank) const
+    {
+        const std::string filename = prefix + "_well_to_trace_" + std::to_string(my_rank) + ".csv";
+
+        std::ofstream out(filename);
+        AssertThrow(out.good(),
+                    ExcMessage("Could not open file: " + filename));
+
+        // CSV header
+        out << "well_dof,tr_dof,tr_rank\n";
+
+        // Data
+        for (const auto &kv : vec)
+        {
+            const unsigned int well_dof = kv.first;
+
+            for (const auto &tr : kv.second)
+            {
+                out << well_dof << ","
+                    << tr.trace_id << ","
+                    << tr.trace_rank << "\n";
+            }
+        }
+
+        out.close();
+    }
+
+
 
 
 

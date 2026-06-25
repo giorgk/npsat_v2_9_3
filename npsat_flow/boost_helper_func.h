@@ -17,7 +17,7 @@
 namespace npsat_flow{
     using namespace dealii;
     namespace bg = boost::geometry;
-    //namespace bgi = boost::geometry::index;
+    namespace bgi = boost::geometry::index;
     using Point2D = bg::model::point<double, 2, bg::cs::cartesian>;
     using WellValue = std::pair<Point2D, std::size_t>;
     using Polygon = bg::model::polygon<Point2D>;
