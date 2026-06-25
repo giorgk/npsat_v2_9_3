@@ -24,6 +24,20 @@ namespace npsat_flow{
             f_hist.clear();
         }
     };
+
+    struct RelativeKParams
+    {
+        double r_min     = 1e-8;   // residual floor
+        double eps       = 0.05;   // smoothing length [L] (e.g. fraction of layer thickness)
+        double power_p   = 2.0;    // for PowerSigmoid
+    };
+
+    inline double logistic_sigma(const double x)
+    {
+        if (x > 40.0)  return 1.0;
+        if (x < -40.0) return 0.0;
+        return 1.0 / (1.0 + std::exp(-x));
+    }
 }
 
 #endif //NON_LINEAR_H

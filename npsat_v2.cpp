@@ -86,20 +86,53 @@ private:
   void update_local_cell_well_link_owners();
   void build_trace_well_coupling_maps();
   void initialize_initial_head();
+
   // Methods related to assemble system
   void assemble_system();
-  void identify_top_active_cells(
-        std::vector<unsigned char> &recharge_receiver,
-        std::vector<double> &receiver_recharge_area,
-        std::vector<double> &receiver_effective_z_top);
+  void identify_top_active_cells( std::vector<unsigned char> &recharge_receiver,
+    std::vector<double> &receiver_recharge_area, std::vector<double> &receiver_effective_z_top);
+  void compute_cell_r_and_storage(npsat_flow::CellNonlinearData &out, const typename DoFHandler<dim>::active_cell_iterator &cell,
+        const std::vector<types::global_dof_index> &head_dof_indices, const double effective_z_top = std::numeric_limits<double>::quiet_NaN()) const;
+  double effective_top_for_cell(const npsat_flow::CellNonlinearData &cell_data, double routed_receiver_effective_z_top) const;
+  bool should_receive_gw_recharge(const std::vector<unsigned char> &recharge_receiver,
+    const typename DoFHandler<dim>::active_cell_iterator &cell,const unsigned int i_face) const;
+
+  // Methods related to solve
+  void solve();
+  void build_schur_rhs(TrilinosWrappers::MPI::Vector &schur_rhs);
+  void back_substitute_well_heads(const TrilinosWrappers::MPI::Vector &lambda_owned);
+
+  // Post process methods
+  void compute_heads();
+  void compute_fluxes();
+  void compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev, const TrilinosWrappers::MPI::Vector &h_next,
+    double &update_norm, double &ref_norm) const;
+  bool check_nonlinear_convergence(const double update_norm, const double ref_norm) const;
+  bool anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel,
+                                     const TrilinosWrappers::MPI::Vector &x_k,
+                                     const TrilinosWrappers::MPI::Vector &G_xk,
+                                     npsat_flow::NonlinearState &nl_state,
+                                     const npsat_flow::NonlinearControls &ctl) const;
+  void apply_damped_update(TrilinosWrappers::MPI::Vector &h_guess,
+                                     const TrilinosWrappers::MPI::Vector &h_candidate,
+                                     const double omega) const;
 
   // Save data for trace app
   void save_velocity_io_mapping_once() const;
+
+  // Methods to print the output data
+  void write_well_exchange_identity_csv_mpi(const std::string &prefix) const;
+  void compute_wellbore_flows(const std::string &prefix) const;
+  void write_wellbore_segments_csv_mpi(const std::string &prefix) const;
 
   std::string output_root_path() const;
   std::string output_prefix_path() const;
   void align_time_dependent_data();
   void write_final_mesh_with_properties() const;
+
+  // Debug only methods
+  void print_matrix(const FullMatrix<double> &A, const std::string& name);
+  void print_vector(const Vector<double> &A, const std::string& name);
 
   MPI_Comm mpi_communicator;
   parallel::distributed::Triangulation<dim> triangulation;
@@ -170,9 +203,11 @@ private:
 
   npsat_flow::NonlinearState    nl_state; ///< Mutable nonlinear iteration counters and Anderson history.
   std::unordered_set<std::uint64_t> previous_recharge_receiver_gids; ///< Recharge receivers accepted in the previous nonlinear assembly.
+  npsat_flow::RelativeKParams r_params; ///< Parameters controlling nonlinear relative conductivity and storage smoothing.
 
   ConditionalOStream pcout;
   TimerOutput computing_timer;
+  Timer timer;
   npsat_flow::TimeStepTracker time_tracking;
   unsigned int my_rank; ///< MPI rank of this process.
   unsigned int n_proc; ///< Total number of MPI ranks.
@@ -237,6 +272,9 @@ NPSAT_FLOW<dim>::NPSAT_FLOW(const unsigned int degree, const npsat_flow::user_op
 #include "npsat_flow/main_class_impl/npsat_flow_setup.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_write_trace.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_assemble.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_solve.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_post.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_write_output.impl.h"
 
 template <int dim>
 void NPSAT_FLOW<dim>::run() {
@@ -282,12 +320,73 @@ void NPSAT_FLOW<dim>::run() {
       for (nl_state.nl_iter = 0; nl_state.nl_iter < uo.NLC.max_picard_iters; ++nl_state.nl_iter) {
         pcout << "  NL iter " << nl_state.nl_iter << std::endl;
         assemble_system();
-      }
+        solve();
+        compute_heads();
 
+        if (uo.sim_opt.confined)
+        {
+          h_guess = h_new;
+          break;
+        }
+
+        // (4) Compute update norm for convergence checks
+        // compare previous head h_guess and new solution h_new
+        compute_update_norm(h_guess, h_new, update_norm, ref_norm);
+
+        if (check_nonlinear_convergence(update_norm, ref_norm))
+        {
+          h_guess = h_new;
+          break;
+        }
+
+        // Choose the target we want to move toward:
+        const TrilinosWrappers::MPI::Vector *target = &h_new;
+
+        // (7) Update the iterate vector x = (lambda, well) and apply Anderson (optional)
+        //     Define x_k from current accepted solution state, and G(x_k) from raw output.
+        //     The map G here is: x_k -> (solve with coeffs from h_guess) -> x_sol.
+        //
+        //     Practically: you can define x_k as the block_solution from the previous
+        //     nonlinear iteration, and G_xk as the current block_solution.
+        //
+        //     For the first iteration, you can skip AA (no history).
+
+        // Build x_k and G_xk as block vectors (lambda, well_heads)
+        // x_k   = previous accepted iterate (store it)
+        // G_xk  = current raw solution (block_solution)
+        // Then AA provides x_accel.
+        bool aa_ok = false;
+        if (uo.NLC.use_anderson)
+        {
+          aa_ok = anderson_accelerate(
+                      h_accel_owned,
+                      /*x_k=*/h_guess,
+                      /*G_xk=*/h_new,
+                      nl_state,
+                      uo.NLC);
+        }
+        if (aa_ok)
+        {
+          pcout << "  Anderson acceleration accepted at NL iter "
+                << nl_state.nl_iter << std::endl;
+          target = &h_accel_owned;
+        }
+
+        apply_damped_update(h_guess, *target, uo.NLC.damping_omega);
+        break;
+      }
     }
 
+    compute_fluxes();
 
+    //Printing output
+    const std::string out_prefix = output_prefix_path();
+    write_well_exchange_identity_csv_mpi(out_prefix);
+    compute_wellbore_flows(out_prefix);
 
+    h_old = h_new;
+    time_tracking.advance();
+    break;
   }
 
 }

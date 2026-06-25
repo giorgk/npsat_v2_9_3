@@ -242,6 +242,159 @@ namespace npsat_flow{
             out.push_back(e.first); // master dof
     }
 
+    template<int dim>
+    inline void get_face_xy_polygon(
+        const typename DoFHandler<dim>::active_cell_iterator &cell,
+        const unsigned int face_no,
+        std::vector<double> &x,
+        std::vector<double> &y)
+    {
+        AssertThrow(GeometryInfo<dim>::vertices_per_face == 4, ExcMessage("Face XY polygon helper expects quadrilateral faces."));
+
+        x.clear();
+        y.clear();
+        x.reserve(GeometryInfo<dim>::vertices_per_face);
+        y.reserve(GeometryInfo<dim>::vertices_per_face);
+
+        for (unsigned int i = 0; i < GeometryInfo<dim>::vertices_per_face; ++i)
+        {
+            const Point<dim> vertex = cell->face(face_no)->vertex(face_order[i]);
+            x.push_back(vertex[0]);
+            y.push_back(vertex[1]);
+        }
+    }
+
+    template<int dim>
+    inline bool map_xy_to_unit_face(
+        const typename DoFHandler<dim>::active_cell_iterator &cell,
+        const unsigned int face_no,
+        const double x,
+        const double y,
+        Point<dim - 1> &unit_point)
+    {
+        AssertThrow(GeometryInfo<dim>::vertices_per_face == 4,
+                    ExcMessage("Face point mapping helper expects quadrilateral faces."));
+
+        double xv[4];
+        double yv[4];
+        for (unsigned int i = 0; i < 4; ++i)
+        {
+            const Point<dim> vertex = cell->face(face_no)->vertex(face_order[i]);
+            xv[i] = vertex[0];
+            yv[i] = vertex[1];
+        }
+
+        double u = 0.5;
+        double v = 0.5;
+        for (unsigned int iter = 0; iter < 12; ++iter)
+        {
+            const double N0 = (1.0 - u) * (1.0 - v);
+            const double N1 = u * (1.0 - v);
+            const double N2 = u * v;
+            const double N3 = (1.0 - u) * v;
+
+            const double xm = N0 * xv[0] + N1 * xv[1] + N2 * xv[2] + N3 * xv[3];
+            const double ym = N0 * yv[0] + N1 * yv[1] + N2 * yv[2] + N3 * yv[3];
+
+            const double rx = xm - x;
+            const double ry = ym - y;
+            if (std::sqrt(rx * rx + ry * ry) < 1.0e-10)
+                break;
+
+            const double dN0du = -(1.0 - v);
+            const double dN1du =  (1.0 - v);
+            const double dN2du =  v;
+            const double dN3du = -v;
+
+            const double dN0dv = -(1.0 - u);
+            const double dN1dv = -u;
+            const double dN2dv =  u;
+            const double dN3dv =  (1.0 - u);
+
+            const double dxdu = dN0du * xv[0] + dN1du * xv[1] + dN2du * xv[2] + dN3du * xv[3];
+            const double dydu = dN0du * yv[0] + dN1du * yv[1] + dN2du * yv[2] + dN3du * yv[3];
+            const double dxdv = dN0dv * xv[0] + dN1dv * xv[1] + dN2dv * xv[2] + dN3dv * xv[3];
+            const double dydv = dN0dv * yv[0] + dN1dv * yv[1] + dN2dv * yv[2] + dN3dv * yv[3];
+
+            const double det = dxdu * dydv - dydu * dxdv;
+            if (std::abs(det) < 1.0e-24)
+                return false;
+
+            const double du = (-rx * dydv + ry * dxdv) / det;
+            const double dv = (-dxdu * ry + dydu * rx) / det;
+
+            u += du;
+            v += dv;
+        }
+
+        constexpr double tol = 1.0e-8;
+        if (u < -tol || u > 1.0 + tol || v < -tol || v > 1.0 + tol)
+            return false;
+
+        unit_point[0] = std::min(1.0, std::max(0.0, u));
+        unit_point[1] = std::min(1.0, std::max(0.0, v));
+        return true;
+    }
+
+
+    template<int dim>
+    class SchurComplement : public Subscriptor
+    {
+    public:
+        SchurComplement(const TrilinosWrappers::BlockSparseMatrix &system_matrix,
+                        const IndexSet                            &lambda_owned,
+                        const IndexSet                            &well_owned,
+                        const AffineConstraints<double>           &lambda_constraints,
+                        const MPI_Comm                            &mpi_comm)
+        : system_matrix(system_matrix),
+          lambda_constraints(lambda_constraints),
+            well_owned(well_owned)
+        {
+            // tmp_w matches the Well space (Block 1)
+            tmp_w.reinit(well_owned, mpi_comm);
+
+            // coupling_contribution matches the Lambda/Face space (Block 0)
+            Rw_vector.reinit(lambda_owned, mpi_comm);
+        }
+
+        void vmult(TrilinosWrappers::MPI::Vector &dst,
+             const TrilinosWrappers::MPI::Vector &src) const
+        {
+            // 1. dst = S * src
+            system_matrix.block(0, 0).vmult(dst, src);
+
+            // 2. tmp_w = R^T * src  (Well-space temporary)
+            system_matrix.block(0, 1).Tvmult(tmp_w, src);
+
+            // 3. tmp_w = W^{-1} * tmp_w   (W is diagonal)
+            const auto &W = system_matrix.block(1, 1);
+            for (const auto i : well_owned)
+            {
+                double diag = W.diag_element(i);
+                if (std::abs(diag) > 1e-16)
+                    tmp_w(i) /= diag;
+                else
+                    tmp_w(i) = 0.0;
+            }
+
+            // 4. Rw_vector = R * tmp_w
+            system_matrix.block(0, 1).vmult(Rw_vector, tmp_w);
+
+            // 5. dst -= Rw_vector
+            dst.add(-1.0, Rw_vector);
+
+            // 6. Apply λ-constraints to operator (important!)
+            //lambda_constraints.distribute(dst);
+        }
+
+    private:
+        const TrilinosWrappers::BlockSparseMatrix &system_matrix;
+        const AffineConstraints<double> &lambda_constraints;
+        const IndexSet                            well_owned;   // <-- added
+        mutable TrilinosWrappers::MPI::Vector      tmp_w;
+        mutable TrilinosWrappers::MPI::Vector      Rw_vector;
+    };
+
 
 
 }

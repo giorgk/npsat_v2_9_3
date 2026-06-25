@@ -229,6 +229,58 @@ namespace npsat_flow {
         double source_area;
     };
 
+    struct CellNonlinearData
+    {
+        double z_bot = 0.0;
+        double z_top = 0.0;
+        double assembly_z_top = 0.0;
+        double thickness = 0.0;
+
+        double h_e   = 0.0;   // representative head in cell
+        double psi   = 0.0;   // h - z_bot
+
+        double r     = 1.0;   // relative conductivity factor
+        double S_eff = 0.0;   // effective storage coefficient for this cell (scalar)
+
+        bool is_partially_saturated = false;
+        bool is_fully_dry           = false;
+        bool is_fully_saturated     = false;
+
+        bool is_top_layer_cell      = false; // inferred from boundary top face
+        bool uses_effective_top     = false; // nonlinear quantities use assembly_z_top instead of geometric z_top
+    };
+
+    using dof_t  = types::global_dof_index;
+    using well_t = unsigned int;
+    struct Well10Entry { well_t well; dof_t col; double val; }; // (1,0): row=well, col=trace/master
+    struct Well11Entry { well_t well; double val; };            // (1,1): diagonal only in your code
+    struct WellRhsEntry{ well_t well; double val; };            // rhs block(1)
+    struct Trace01Entry
+    {
+        dof_t  row;   // trace row (master)
+        well_t col;   // well column
+        double val;
+    };
+
+    struct WellIdentityPartial
+    {
+        std::uint32_t well_id;      // global well index
+        std::uint32_t count_cells;  // number of contributing cells on this rank
+        double        sum_Qe;
+        double        sum_cwc;
+        double        sum_cwc_he;
+    };
+    static_assert(std::is_trivially_copyable<WellIdentityPartial>::value, "WellIdentityPartial must be trivially copyable for MPI_BYTE exchange.");
+
+    // One well segment contribution coming from a cell on some rank.
+    // We only need (well_id, ze, Qe) to reproduce the tested logic.
+    struct WellSegmentMsg
+    {
+        std::uint32_t well_id; // global well index
+        double        ze;      // ordering key (bottom->top)
+        double        Qe;      // exchange for this segment (must be computed already)
+    };
+
 }
 
 #endif //NPSAT_V2_FLOW_STRUCTURES_H
