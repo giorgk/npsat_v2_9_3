@@ -109,8 +109,92 @@ void NPSAT_FLOW<dim>::setup_system() {
         //block_sparsity.block(0,0).copy_from(dsp_00);
     }
 
+    // ------------------------------
+    // (C) Fill (0,1): trace-row couplings to wells
+    //     Use local_trace_well_pairs (from locally owned cells)
+    //     Only add rows that I own: lambda_locally_owned_dofs
+    // ------------------------------
+    // After build_trace_well_coupling_maps() has run:
 
+    // block_sparsity.block(0,1) has row space = lambda_locally_owned_dofs
+    // and column space = well_locally_owned_dofs? (depends on your block setup)
+    // Typically for a distributed block sparsity you add (row,col) even if col is nonlocal,
+    // as long as the sparsity object supports it (Trilinos/LA may need specific init).
+    // Here we follow the old behavior: add for locally owned trace rows only.
+    for (const auto &kv : trace_to_well_dof.data())
+    {
+        const auto trace_row = kv.first;
+        AssertThrow(lambda_locally_owned_dofs.is_element(trace_row), ExcInternalError());
 
+        for (const auto &wr : kv.second)
+            block_sparsity.block(0,1).add(trace_row, wr.well_id);
+    }
+
+    // ------------------------------
+    // (D) Fill (1,0): well-row couplings to trace columns
+    //     Use global_trace_well_pairs which (by new gather) contains
+    //     only pairs for wells I own.
+    // ------------------------------
+    for (const auto &kv : well_to_trace_dof.data())
+    {
+        const unsigned int well_row = static_cast<unsigned int>(kv.first);
+        AssertThrow(well_locally_owned_dofs.is_element(well_row), ExcInternalError());
+
+        for (const auto &tr : kv.second)
+            block_sparsity.block(1,0).add(well_row, tr.trace_id); // trace_id may be remote
+    }
+
+    // ------------------------------
+    // (E) Fill (1,1): diagonal well coupling (owned rows only)
+    // ------------------------------
+    for (auto it = well_locally_owned_dofs.begin(); it != well_locally_owned_dofs.end(); ++it)
+    {
+        const types::global_dof_index w = *it;      // global well id
+        block_sparsity.block(1,1).add(w, w);
+    }
+
+    // Finalize pattern
+    block_sparsity.compress();
+
+    // Build Trilinos block matrix using block_sparsity
+    block_system_matrix.reinit(block_sparsity);
+
+    // ------------------------------
+    // (F) Build block vectors
+    // ------------------------------
+    std::vector<IndexSet> owned(2), relevant(2);
+    owned[0]    = lambda_locally_owned_dofs;
+    owned[1]    = well_locally_owned_dofs;
+    // For vectors, "relevant" may overlap; this is okay.
+    relevant[0] = lambda_locally_relevant_dofs;
+    relevant[1] = well_locally_relevant_dofs;
+
+    block_rhs_vector.reinit(owned, mpi_communicator);
+    block_solution.reinit(owned, relevant, mpi_communicator);
+
+    // 8. Allocate storage for transient head update
+    //h_old.reinit(head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
+    h_old.reinit(head_locally_owned_dofs, mpi_communicator);
+    //h_new.reinit(head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
+    h_new.reinit(head_locally_owned_dofs, mpi_communicator);
+    //h_new_owned.reinit(head_locally_owned_dofs, mpi_communicator);
+    q_new.reinit(flux_locally_owned_dofs, flux_locally_relevant_dofs, mpi_communicator);
+    well_solution.reinit(well_locally_owned_dofs, mpi_communicator);
+    // Separate ghosted read vector (owned + relevant)
+    well_solution_ghosted.reinit(well_locally_owned_dofs,
+                                 well_locally_relevant_dofs,
+                                 mpi_communicator);
+    h_guess.reinit(head_locally_owned_dofs,mpi_communicator);
+
+    // 9. Output statistics
+    pcout << "Block MNW2-HMFEM system setup complete:" << std::endl;
+    pcout << "  λ DOFs = " << dof_handler_trace.n_dofs() << std::endl;
+    pcout << "  Well DOFs (global) = " << mnwells.wells.size() << std::endl;
+    pcout << "  Well DOFs (owned here) = " << well_locally_owned_dofs.n_elements() << std::endl;
+    pcout << "  u DOFs = " << dof_handler_flux.n_dofs() << std::endl;
+    pcout << "  h DOFs = " << dof_handler_head.n_dofs() << std::endl;
+
+    save_velocity_io_mapping_once();
 }
 
 template <int dim>
@@ -598,10 +682,33 @@ void NPSAT_FLOW<dim>::build_trace_well_coupling_maps() {
         trace_to_well_dof.print_data(prefix, my_rank);
         well_to_trace_dof.print_data(prefix, my_rank);
     }
+}
 
+template <int dim>
+void NPSAT_FLOW<dim>::initialize_initial_head() {
+    AssertThrow(!uo.initial_head_file.empty(),
+                ExcMessage("IC.Head must specify an initial-head interpolation master file."));
+    AssertThrow(h_old.size() == dof_handler_head.n_dofs(),
+                ExcMessage("Head vector is not initialized. Call setup_system() before initialize_initial_head()."));
 
+    const std::string input_root = npsat_flow::join_paths(uo.main_path, uo.input_path);
+    auto head_interp = std::make_shared<npsat_flow::InterpInterface<dim>>();
 
+    head_interp->read_master_file(uo.initial_head_file,
+                                  1.0,
+                                  mpi_communicator,
+                                  input_root);
 
+    npsat_flow::InterpolationFunction<dim> initial_head;
+    initial_head.set_interpolant(head_interp);
+    initial_head.set_time_index(0);
+
+    VectorTools::interpolate(dof_handler_head, initial_head, h_old);
+    h_old.compress(VectorOperation::insert);
+
+    pcout << "Initial head loaded from "
+          << npsat_flow::resolve_relative_path(input_root, uo.initial_head_file)
+          << std::endl;
 }
 
 #endif //NPSAT_FLOW_SETUP_IMPL_H

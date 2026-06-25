@@ -60,7 +60,8 @@
 #include "npsat_flow/mesh_gen.h"
 #include "npsat_flow/local_element_data.h"
 #include "npsat_flow/dof_ownership.h"
-#include "npsat_flow//mpi_helpers.h"
+#include "npsat_flow/mpi_helpers.h"
+#include "npsat_flow/non_linear.h"
 
 using namespace dealii;
 
@@ -77,16 +78,27 @@ private:
   void set_simulation_data();
   void refine_triangulation();
   void initialize_local_cell_slots();
-
+  // Methods related to setup system
   void setup_system();
   void apply_trace_boundary_conditions();
   void setup_local_cell_well_link();
   void setup_well_index_sets_by_segments();
   void update_local_cell_well_link_owners();
   void build_trace_well_coupling_maps();
+  void initialize_initial_head();
+  // Methods related to assemble system
+  void assemble_system();
+  void identify_top_active_cells(
+        std::vector<unsigned char> &recharge_receiver,
+        std::vector<double> &receiver_recharge_area,
+        std::vector<double> &receiver_effective_z_top);
+
+  // Save data for trace app
+  void save_velocity_io_mapping_once() const;
 
   std::string output_root_path() const;
   std::string output_prefix_path() const;
+  void align_time_dependent_data();
   void write_final_mesh_with_properties() const;
 
   MPI_Comm mpi_communicator;
@@ -129,6 +141,11 @@ private:
   AffineConstraints<double> lambda_constraints; ///< Dirichlet constraints applied to trace-head DoFs.
   npsat_flow::OwnershipManager lambda_ownership; ///< Cached trace-DoF ownership lookup for routing MPI contributions.
 
+  TrilinosWrappers::MPI::Vector h_old; ///< Head vector from the previous time step.
+  TrilinosWrappers::MPI::Vector h_new; ///< Recovered head vector from the current nonlinear solve.
+  TrilinosWrappers::MPI::Vector h_guess; ///< Current nonlinear head iterate used for coefficient evaluation.
+  TrilinosWrappers::MPI::Vector q_new; ///< Recovered flux vector for the current solution.
+
 
   const npsat_flow::user_options uo;
 
@@ -151,6 +168,9 @@ private:
 
   npsat_flow::LocalElementDataRT0DG0 local_element_data_rt_0dg0;
 
+  npsat_flow::NonlinearState    nl_state; ///< Mutable nonlinear iteration counters and Anderson history.
+  std::unordered_set<std::uint64_t> previous_recharge_receiver_gids; ///< Recharge receivers accepted in the previous nonlinear assembly.
+
   ConditionalOStream pcout;
   TimerOutput computing_timer;
   npsat_flow::TimeStepTracker time_tracking;
@@ -170,6 +190,20 @@ template <int dim>
 std::string NPSAT_FLOW<dim>::output_prefix_path() const
 {
   return npsat_flow::join_paths(output_root_path(), uo.output_prefix);
+}
+
+template <int dim>
+void NPSAT_FLOW<dim>::align_time_dependent_data()
+{
+  const unsigned int step = time_tracking.simulation_step();
+
+  gw_recharge.set_time_index(step);
+  dirichlet_bc.set_time_index(step);
+  ghb_bc.set_time_index(step);
+
+  hgeo_prop.set_time_index(0);
+  streams.set_time_step_number(static_cast<int>(step));
+  mnwells.set_time_step_number(static_cast<int>(step));
 }
 
 
@@ -201,6 +235,8 @@ NPSAT_FLOW<dim>::NPSAT_FLOW(const unsigned int degree, const npsat_flow::user_op
 
 #include "npsat_flow/main_class_impl/npsat_flow_prepare.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_setup.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_write_trace.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_assemble.impl.h"
 
 template <int dim>
 void NPSAT_FLOW<dim>::run() {
@@ -215,6 +251,44 @@ void NPSAT_FLOW<dim>::run() {
   }
 
   setup_system();
+  initialize_initial_head();
+
+  TrilinosWrappers::MPI::Vector h_accel_owned;
+  h_accel_owned.reinit(head_locally_owned_dofs, mpi_communicator);
+
+  double update_norm;
+  double ref_norm;
+
+  while (!time_tracking.done()) {
+    pcout << "\n==============================================" << std::endl;
+    pcout << "Time step " << time_tracking.simulation_step()
+          << " of " << time_tracking.n_sim_steps() << std::endl;
+
+    align_time_dependent_data();
+
+    // ------------------------------------------------------------
+    // Nonlinear solve for this time step
+    // ------------------------------------------------------------
+    {
+      // Nonlinear iterate uses a head guess; initialize with previous time step head
+      // h_old is needed as head of the previous time step to update RHS and calculate storage change
+      h_guess = h_old;
+
+      previous_recharge_receiver_gids.clear();
+
+      if (!uo.NLC.carry_history_across_timesteps)
+        nl_state.clear_history();
+
+      for (nl_state.nl_iter = 0; nl_state.nl_iter < uo.NLC.max_picard_iters; ++nl_state.nl_iter) {
+        pcout << "  NL iter " << nl_state.nl_iter << std::endl;
+        assemble_system();
+      }
+
+    }
+
+
+
+  }
 
 }
 

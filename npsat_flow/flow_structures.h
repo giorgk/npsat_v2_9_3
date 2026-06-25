@@ -223,6 +223,12 @@ namespace npsat_flow {
         { ar & well_id; ar & trace_id; ar & trace_rank; }
     };
 
+    struct RechargeRouteRequest
+    {
+        std::uint64_t cell_gid;
+        double source_area;
+    };
+
 }
 
 #endif //NPSAT_V2_FLOW_STRUCTURES_H
