@@ -395,6 +395,21 @@ namespace npsat_flow{
         mutable TrilinosWrappers::MPI::Vector      Rw_vector;
     };
 
+    template <typename T>
+    void write_pod(std::ofstream &out, const T &v)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,"T must be trivially copyable.");
+        out.write(reinterpret_cast<const char*>(&v), sizeof(T));
+    }
+
+    inline void write_string(std::ofstream &out, const std::string &s)
+    {
+        const std::uint32_t n = static_cast<std::uint32_t>(s.size());
+        write_pod(out, n);
+        out.write(s.data(), n);
+    }
+
+
 
 
 }

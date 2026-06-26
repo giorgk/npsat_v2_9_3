@@ -666,6 +666,149 @@ namespace npsat_flow {
     }
 
 
+    inline void write_wells_as_dataout_1d3(const std::string &filename, const std::vector<WellSegmentOut> &segments) {
+        Triangulation<1,3> tria;
+
+        std::vector<Point<3>> vertices;
+        vertices.reserve(2 * segments.size());
+
+        std::vector<CellData<1>> cells;
+        cells.reserve(segments.size());
+
+        for (std::size_t i = 0; i < segments.size(); ++i)
+        {
+            const WellSegmentOut &s = segments[i];
+
+            const unsigned int v0 = static_cast<unsigned int>(vertices.size());
+            vertices.push_back(Point<3>(s.x, s.y, s.z_bot));
+
+            const unsigned int v1 = static_cast<unsigned int>(vertices.size());
+            vertices.push_back(Point<3>(s.x, s.y, s.z_top));
+
+            CellData<1> cd;
+            cd.vertices[0] = v0;
+            cd.vertices[1] = v1;
+            cd.material_id = 0;
+
+            cells.push_back(cd);
+        }
+
+        SubCellData sub;
+        tria.create_triangulation(vertices, cells, sub);
+
+        const unsigned int n_cells = tria.n_active_cells();
+        AssertThrow(n_cells == segments.size(), ExcInternalError());
+
+        Vector<double> Eid_cell(n_cells);
+        Vector<double> cell_id_cell(n_cells);
+        Vector<double> ze_cell(n_cells);
+        Vector<double> Qe_cell(n_cells);
+        Vector<double> cwc_cell(n_cells);
+        Vector<double> Qwbf_top_cell(n_cells);
+        Vector<double> Qtot_cell(n_cells);
+        Vector<double> F_top_well_cell(n_cells);
+        Vector<double> diff_cell(n_cells);
+
+        for (unsigned int i = 0; i < n_cells; ++i) {
+            const WellSegmentOut &s = segments[i];
+            // IMPORTANT: "Eid" name and value from MNWell::Eid
+            Eid_cell[i]        = static_cast<double>(s.Eid);
+            cell_id_cell[i]    = static_cast<double>(s.cell_id);
+            ze_cell[i]         = s.ze;
+            Qe_cell[i]         = s.Qe;
+            cwc_cell[i]        = s.cwc;
+            Qwbf_top_cell[i]   = s.Qwbf_top;
+            Qtot_cell[i]       = s.Qtot;
+            F_top_well_cell[i] = s.F_top_well;
+            diff_cell[i]       = s.diff;
+        }
+
+        DataOut<1, DoFHandler<1, 3> > data_out;
+        data_out.attach_triangulation(tria);
+
+        data_out.add_data_vector(Eid_cell,"Eid", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(cell_id_cell, "cell_id", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(ze_cell, "ze", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(Qe_cell, "Qe", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(cwc_cell, "cwc", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(Qwbf_top_cell, "Qwbf_top", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(Qtot_cell, "Qtot", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(F_top_well_cell, "F_top_well", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+        data_out.add_data_vector(diff_cell, "diff", DataOut<1, DoFHandler<1, 3> >::type_cell_data);
+
+        data_out.build_patches();
+
+        std::ofstream out(filename);
+        AssertThrow(out.good(), ExcMessage("Could not open: " + filename));
+        data_out.write_vtu(out);
+    }
+
+    void write_wells_as_legacy_vtk_polydata(const std::string &filename, const std::vector<WellSegmentOut> &segments) {
+        std::ofstream vtk(filename);
+        AssertThrow(vtk.good(), ExcMessage("Could not open: " + filename));
+
+        vtk << "# vtk DataFile Version 3.0\n";
+        vtk << "Wellbore segments\n";
+        vtk << "ASCII\n";
+        vtk << "DATASET POLYDATA\n";
+        vtk << std::setprecision(16) << std::scientific;
+
+        // points: 2 per segment
+        const std::size_t n_lines  = segments.size();
+        const std::size_t n_points = 2 * n_lines;
+
+        vtk << "POINTS " << n_points << " double\n";
+        for (const auto &s : segments)
+        {
+            vtk << s.x << " " << s.y << " " << s.z_bot << "\n";
+            vtk << s.x << " " << s.y << " " << s.z_top << "\n";
+        }
+
+        vtk << "LINES " << n_lines << " " << (3 * n_lines) << "\n";
+        for (std::size_t i = 0; i < n_lines; ++i)
+        {
+            const std::size_t p0 = 2*i;
+            const std::size_t p1 = 2*i + 1;
+            vtk << "2 " << p0 << " " << p1 << "\n";
+        }
+
+        vtk << "CELL_DATA " << n_lines << "\n";
+
+        auto write_int = [&](const std::string &name, auto getter)
+        {
+            vtk << "SCALARS " << name << " int 1\n";
+            vtk << "LOOKUP_TABLE default\n";
+            for (const auto &s : segments) vtk << static_cast<int>(getter(s)) << "\n";
+        };
+
+        auto write_uint = [&](const std::string &name, auto getter)
+        {
+            vtk << "SCALARS " << name << " unsigned_int 1\n";
+            vtk << "LOOKUP_TABLE default\n";
+            for (const auto &s : segments) vtk << static_cast<unsigned int>(getter(s)) << "\n";
+        };
+
+        auto write_double = [&](const std::string &name, auto getter)
+        {
+            vtk << "SCALARS " << name << " double 1\n";
+            vtk << "LOOKUP_TABLE default\n";
+            for (const auto &s : segments) vtk << static_cast<double>(getter(s)) << "\n";
+        };
+
+        // IMPORTANT: identifier field must be called "Eid"
+        write_int("Eid",               [](const WellSegmentOut &s){ return s.Eid; });
+        write_uint("cell_id",          [](const WellSegmentOut &s){ return s.cell_id; });
+        write_double("ze",             [](const WellSegmentOut &s){ return s.ze; });
+        write_double("Qe",             [](const WellSegmentOut &s){ return s.Qe; });
+        write_double("CWC",            [](const WellSegmentOut &s){ return s.cwc; });
+        write_double("Qwbf_top",       [](const WellSegmentOut &s){ return s.Qwbf_top; });
+        write_double("Qtot",           [](const WellSegmentOut &s){ return s.Qtot; });
+        write_double("F_top_well",     [](const WellSegmentOut &s){ return s.F_top_well; });
+        write_double("diff",           [](const WellSegmentOut &s){ return s.diff; });
+
+        vtk.flush();
+    }
+
 
 
 

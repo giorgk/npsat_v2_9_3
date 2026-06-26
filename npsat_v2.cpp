@@ -119,16 +119,23 @@ private:
 
   // Save data for trace app
   void save_velocity_io_mapping_once() const;
+  void export_cell_well_map_binary_once(const std::string &prefix) const;
+  void save_water_table_per_step(const std::string &prefix) const;
+  void save_velocity_per_step(const std::string &prefix) const;
+  void build_and_write_vface_rt0_per_step(const std::string &prefix,
+        TrilinosWrappers::MPI::Vector &vface_global) const;
 
   // Methods to print the output data
   void write_well_exchange_identity_csv_mpi(const std::string &prefix) const;
   void compute_wellbore_flows(const std::string &prefix) const;
   void write_wellbore_segments_csv_mpi(const std::string &prefix) const;
+  void output_results(const std::string &prefix);
 
   std::string output_root_path() const;
   std::string output_prefix_path() const;
   void align_time_dependent_data();
   void write_final_mesh_with_properties() const;
+  const std::string &cellid_string_from_active_index(const unsigned int aidx) const;
 
   // Debug only methods
   void print_matrix(const FullMatrix<double> &A, const std::string& name);
@@ -239,6 +246,16 @@ void NPSAT_FLOW<dim>::align_time_dependent_data()
   hgeo_prop.set_time_index(0);
   streams.set_time_step_number(static_cast<int>(step));
   mnwells.set_time_step_number(static_cast<int>(step));
+}
+
+template<int dim>
+const std::string &NPSAT_FLOW<dim>::cellid_string_from_active_index(const unsigned int aidx) const
+{
+  auto it = std::lower_bound(local_cell_id_strings.begin(), local_cell_id_strings.end(),
+                             aidx,
+                             [](const auto &p, unsigned int v){ return p.first < v; });
+  AssertThrow(it != local_cell_id_strings.end() && it->first == aidx, ExcInternalError());
+  return it->second;
 }
 
 
@@ -383,6 +400,13 @@ void NPSAT_FLOW<dim>::run() {
     const std::string out_prefix = output_prefix_path();
     write_well_exchange_identity_csv_mpi(out_prefix);
     compute_wellbore_flows(out_prefix);
+    write_wellbore_segments_csv_mpi(out_prefix);
+    output_results(out_prefix);
+
+    // Save data for trace
+    export_cell_well_map_binary_once(out_prefix);
+    save_water_table_per_step(out_prefix);
+    save_velocity_per_step(out_prefix);
 
     h_old = h_new;
     time_tracking.advance();
