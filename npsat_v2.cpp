@@ -295,8 +295,8 @@ NPSAT_FLOW<dim>::NPSAT_FLOW(const unsigned int degree, const npsat_flow::user_op
 
 template <int dim>
 void NPSAT_FLOW<dim>::run() {
-  std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
-  std::cout << Utilities::MPI::this_mpi_process(mpi_communicator) << std::endl;
+  //std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
+  //std::cout << Utilities::MPI::this_mpi_process(mpi_communicator) << std::endl;
 
   set_simulation_data();
   if (uo.print_mesh_exit)
@@ -390,7 +390,7 @@ void NPSAT_FLOW<dim>::run() {
         }
 
         apply_damped_update(h_guess, *target, uo.NLC.damping_omega);
-        break;
+        //break;
       }
     }
 
@@ -399,19 +399,28 @@ void NPSAT_FLOW<dim>::run() {
     //Printing output
     const std::string out_prefix = output_prefix_path();
     write_well_exchange_identity_csv_mpi(out_prefix);
+    MPI_Barrier(mpi_communicator);
     compute_wellbore_flows(out_prefix);
+    MPI_Barrier(mpi_communicator);
     write_wellbore_segments_csv_mpi(out_prefix);
+    MPI_Barrier(mpi_communicator);
     output_results(out_prefix);
+    MPI_Barrier(mpi_communicator);
 
     // Save data for trace
     export_cell_well_map_binary_once(out_prefix);
+    MPI_Barrier(mpi_communicator);
     save_water_table_per_step(out_prefix);
+    MPI_Barrier(mpi_communicator);
     save_velocity_per_step(out_prefix);
+    MPI_Barrier(mpi_communicator);
 
     h_old = h_new;
     time_tracking.advance();
-    break;
+    //break;
   }
+  MPI_Barrier(mpi_communicator);
+  pcout << "Simulation Finished" << std::endl;
 
 }
 

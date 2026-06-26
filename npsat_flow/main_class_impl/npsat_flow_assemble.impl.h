@@ -723,7 +723,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
     MPI_Barrier(mpi_communicator);
 
     // --- Print send + receive stats (ordered by rank) ---
-    if (uo.print_matrices) // TODO add verbose level instead of this
+    if (uo.verbose_level > 1)
     {
         npsat_flow::print_alltoall_stats_compact_aligned(st10,  mpi_communicator);
         npsat_flow::print_alltoall_stats_compact_aligned(st11,  mpi_communicator);
@@ -733,7 +733,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
     MPI_Barrier(mpi_communicator);
 
     // --- Verify global consistency of each exchange ---
-    if (uo.print_matrices) // TODO add verbose level instead of this
+    if (uo.verbose_level > 1)
     {
         npsat_flow::check_alltoall_consistency(st10,  mpi_communicator);
         npsat_flow::check_alltoall_consistency(st11,  mpi_communicator);
@@ -854,7 +854,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
     }
     MPI_Barrier(mpi_communicator);
 
-    {
+    if (uo.verbose_level > 1){
         const auto &A00v = block_system_matrix.block(0,0).trilinos_matrix();
 
         pcout << "lambda_locally_owned_dofs: " << lambda_locally_owned_dofs.n_elements() << "\n";
@@ -962,7 +962,7 @@ void NPSAT_FLOW<dim>::identify_top_active_cells(std::vector<unsigned char> &rech
         npsat_flow::CellNonlinearData cell_data;
         compute_cell_r_and_storage(cell_data, head_cell, head_dof_indices);
 
-        constexpr bool verbose_recharge_routing = false;
+        //constexpr bool verbose_recharge_routing = false;
         const double drying_saturated_fraction = std::max(0.0, uo.NLC.recharge_drying_saturated_fraction);
         const double wetting_saturated_fraction = std::max(drying_saturated_fraction, uo.NLC.recharge_wetting_saturated_fraction);
         const double min_recharge_relative_k = std::max(0.0, uo.NLC.recharge_min_relative_k);
@@ -975,7 +975,7 @@ void NPSAT_FLOW<dim>::identify_top_active_cells(std::vector<unsigned char> &rech
         const bool enough_relative_k = (cell_data.r > min_recharge_relative_k);
         const bool accepts_recharge = enough_saturated_thickness && enough_relative_k;
 
-        if (verbose_recharge_routing && (cell_data.is_partially_saturated || cell_data.is_fully_dry))
+        if (uo.verbose_level > 1 && (cell_data.is_partially_saturated || cell_data.is_fully_dry))
         {
             std::cout << std::setprecision(16)
                       << "Recharge routing dry/partial cell diagnostic on rank "

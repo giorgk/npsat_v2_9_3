@@ -667,6 +667,10 @@ namespace npsat_flow {
 
 
     inline void write_wells_as_dataout_1d3(const std::string &filename, const std::vector<WellSegmentOut> &segments) {
+        if (segments.empty())
+        {
+            return;
+        }
         Triangulation<1,3> tria;
 
         std::vector<Point<3>> vertices;
@@ -744,6 +748,8 @@ namespace npsat_flow {
     }
 
     void write_wells_as_legacy_vtk_polydata(const std::string &filename, const std::vector<WellSegmentOut> &segments) {
+        if (segments.empty())
+            return;
         std::ofstream vtk(filename);
         AssertThrow(vtk.good(), ExcMessage("Could not open: " + filename));
 

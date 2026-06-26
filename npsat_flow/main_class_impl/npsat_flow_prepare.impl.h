@@ -18,6 +18,8 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
               ExcMessage("Output directory does not exist: " + output_root));
   AssertThrow(npsat_flow::path_is_directory(output_root),
               ExcMessage("Output path is not a directory: " + output_root));
+  pcout << "=======================================================" << std::endl;
+  pcout << "Reading data..." << std::endl;
 
   {// Time step
     time_tracking.read_delta_time_file(npsat_flow::resolve_relative_path(input_root, uo.sim_opt.delta_time_file));
@@ -42,14 +44,6 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
 
   {// Set up hydrogeology data
     hgeo_prop.read(uo, mpi_communicator);
-  }
-
-  {
-    std::cout << "Recharge: " << gw_recharge.value(Point<dim>(2500,2500,0)) << std::endl;
-    std::cout << "Kx: " << hgeo_prop.conductivity(Point<dim>(2500,2500,0)) << std::endl;
-    std::cout << "Ss: " << hgeo_prop.specific_storage(Point<dim>(2500,2500,0)) << std::endl;
-    std::cout << "Sy: " << hgeo_prop.specific_yield(Point<dim>(2500,2500,0)) << std::endl;
-
   }
 
   {// Streams
@@ -95,7 +89,7 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
       pcout << "Wells disabled: Sources.Well_Data is empty." << std::endl;
     }
     pcout << "wells loaded: " << mnwells.wells.size() << std::endl;
-    std::cout << "Rank " << my_rank << " has " << mnwells.wells.size() << std::endl;
+    //std::cout << "Rank " << my_rank << " has " << mnwells.wells.size() << std::endl;
   }
 
   {// Dirichlet boundary conditions
@@ -139,6 +133,8 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
 
   {//Create initial triangulation
     npsat_flow::GridBuilder<dim>::build(triangulation, uo, mpi_communicator);
+    pcout << "Initial triangulation cells: " << triangulation.n_global_active_cells() << std::endl;
+
   }
 
   if (uo.print_initial_mesh) {
@@ -172,6 +168,8 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
 template <int dim>
 void NPSAT_FLOW<dim>::refine_triangulation()
 {
+  pcout << "=======================================================" << std::endl;
+  pcout << "Refive triangulation..." << std::endl;
   typename npsat_flow::GridBuilder<dim>::RefinementTargets targets;
   targets.mnwells = &mnwells;
   targets.streams = &streams;

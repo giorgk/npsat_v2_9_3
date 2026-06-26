@@ -8,6 +8,9 @@
 template <int dim>
 void NPSAT_FLOW<dim>::setup_system() {
 
+    pcout << "=======================================================" << std::endl;
+    pcout << "Setup system..." << std::endl << std::endl;
+
     pcout << "Distributing DoFs..." << std::endl;
 
     {
@@ -19,10 +22,8 @@ void NPSAT_FLOW<dim>::setup_system() {
                 continue;
 
             const unsigned int slot = cell->user_index();
-            AssertThrow(slot < n_local,
-                        ExcMessage("Cell user_index slots are not initialized after refinement."));
-            AssertThrow(seen[slot] == 0,
-                        ExcMessage("Duplicate cell user_index slot detected."));
+            AssertThrow(slot < n_local, ExcMessage("Cell user_index slots are not initialized after refinement."));
+            AssertThrow(seen[slot] == 0, ExcMessage("Duplicate cell user_index slot detected."));
             seen[slot] = 1;
         }
     }
@@ -58,7 +59,7 @@ void NPSAT_FLOW<dim>::setup_system() {
     lambda_constraints.close();
 
     // lambda_ownership knows which ranges each processor owns
-    lambda_ownership.reinit(lambda_locally_owned_dofs, mpi_communicator);
+    lambda_ownership.reinit(lambda_locally_owned_dofs, mpi_communicator, uo.verbose_level);
 
 
     setup_local_cell_well_link();

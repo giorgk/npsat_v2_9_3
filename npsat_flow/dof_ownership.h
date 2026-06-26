@@ -19,7 +19,7 @@ namespace npsat_flow{
     {
     public:
         OwnershipManager() = default;
-        void reinit(const IndexSet &locally_owned, MPI_Comm comm);
+        void reinit(const IndexSet &locally_owned, MPI_Comm comm,int print_level);
         // void build_cache(const std::vector<types::global_dof_index> &indices, const IndexSet &locally_owned);
         // void build_cache(const SortedVectorMap<unsigned int, std::vector<TraceRef>> &well_to_trace_dof,
         //                  const IndexSet                                             &trace_locally_owned,
@@ -80,7 +80,7 @@ namespace npsat_flow{
         return get_owner(idx);
     }
 
-    inline void OwnershipManager::reinit(const IndexSet& locally_owned, MPI_Comm comm)
+    inline void OwnershipManager::reinit(const IndexSet& locally_owned, MPI_Comm comm, int print_level)
     {
         int n_proc = 0;
         MPI_Comm_size(comm, &n_proc);
@@ -101,7 +101,8 @@ namespace npsat_flow{
             if (b < e) // Only store and send ranges that actually contain indices
             {
                 local_intervals.emplace_back(b, e);
-                std::cout << "Rank " << my_rank << " local interval [" << b << " - " << e <<"]" << std::endl;
+                if (print_level>0)
+                    std::cout << "Rank " << my_rank << " local interval [" << b << " - " << e <<"]" << std::endl;
             }
 
         }
@@ -147,8 +148,8 @@ namespace npsat_flow{
         }
         std::sort(owner_ranges.begin(), owner_ranges.end(),
                   [](const OwnerRange &a, const OwnerRange &b) { return a.begin < b.begin; });
-
-        print_owner_ranges(my_rank);
+        if (print_level)
+            print_owner_ranges(my_rank);
     }
 
     // inline void OwnershipManager::build_cache(const std::vector<types::global_dof_index>& indices, const IndexSet& locally_owned)

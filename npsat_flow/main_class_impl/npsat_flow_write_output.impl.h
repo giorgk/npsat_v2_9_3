@@ -7,6 +7,7 @@
 
 template <int dim>
 void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &prefix) const {
+    pcout << "\t write_well_exchange_identity_csv_mpi..." <<std::endl;
     if (!uo.print_well_resid_csv)
         return;
 
@@ -50,7 +51,7 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
         const Agg          &a = kv.second;
 
         const int owner = static_cast<int>(well_owner_rank[w]); // w % n_proc by your setup
-        AssertThrow(owner >= 0 && owner < n_proc, dealii::ExcInternalError());
+        AssertThrow(owner >= 0 && owner < static_cast<int>(n_proc), ExcInternalError());
 
         npsat_flow::WellIdentityPartial p;
         p.well_id     = w;
@@ -66,7 +67,7 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
     // 3) MPI Alltoallv exchange of WellIdentityPartial (as raw bytes)
     // -----------------------------
     std::vector<int> send_counts(n_proc, 0), recv_counts(n_proc, 0);
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
         send_counts[r] = static_cast<int>(send_bins[r].size());
 
     MPI_Alltoall(send_counts.data(), 1, MPI_INT,
@@ -75,7 +76,7 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
 
     std::vector<int> send_displs(n_proc, 0), recv_displs(n_proc, 0);
     int send_total = 0, recv_total = 0;
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
     {
         send_displs[r] = send_total;
         send_total += send_counts[r];
@@ -86,7 +87,7 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
 
     std::vector<npsat_flow::WellIdentityPartial> send_flat;
     send_flat.reserve(static_cast<std::size_t>(send_total));
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
         for (const auto &p : send_bins[r])
             send_flat.push_back(p);
 
@@ -97,7 +98,7 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
     std::vector<int> send_displs_b(n_proc, 0), recv_displs_b(n_proc, 0);
 
     const int bytes_per = static_cast<int>(sizeof(npsat_flow::WellIdentityPartial));
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
     {
         send_counts_b[r] = send_counts[r] * bytes_per;
         recv_counts_b[r] = recv_counts[r] * bytes_per;
@@ -142,9 +143,10 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
 
     const unsigned int n_wells = mnwells.wells.size();
 
+    const int my_rank_int = static_cast<int>(my_rank);
     for (unsigned int w = 0; w < n_wells; ++w)
     {
-        if (static_cast<int>(well_owner_rank[w]) != my_rank)
+        if (static_cast<int>(well_owner_rank[w]) != my_rank_int)
             continue;
 
         const auto it = owned_acc.find(static_cast<std::uint32_t>(w));
@@ -174,7 +176,7 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
     if (!uo.print_wellboreflow_csv)
         return;
 
-    pcout << "Computing wellbore flows (MNW)..." << std::endl;
+    pcout << "\t Computing wellbore flows (MNW)..." << std::endl;
     const unsigned int n_wells = mnwells.wells.size();
 
     // ---------------------------------------------------------------------
@@ -235,12 +237,12 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
         const unsigned int w = static_cast<unsigned int>(s.well_id);
         AssertThrow(w < well_owner_rank.size(), dealii::ExcInternalError());
         const int owner = static_cast<int>(well_owner_rank[w]);
-        AssertThrow(owner >= 0 && owner < n_proc, dealii::ExcInternalError());
+        AssertThrow(owner >= 0 && owner < static_cast<int>(n_proc), dealii::ExcInternalError());
         send_bins[owner].push_back(s);
     }
 
     std::vector<int> send_counts(n_proc, 0), recv_counts(n_proc, 0);
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
         send_counts[r] = static_cast<int>(send_bins[r].size());
 
     MPI_Alltoall(send_counts.data(), 1, MPI_INT,
@@ -249,7 +251,7 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
 
     std::vector<int> send_displs(n_proc, 0), recv_displs(n_proc, 0);
     int send_total = 0, recv_total = 0;
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
     {
         send_displs[r] = send_total;
         send_total += send_counts[r];
@@ -260,7 +262,7 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
 
     std::vector<npsat_flow::WellSegmentMsg> send_flat;
     send_flat.reserve(static_cast<std::size_t>(send_total));
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
         for (const auto &s : send_bins[r])
             send_flat.push_back(s);
 
@@ -269,7 +271,7 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
     const int bytes_per = static_cast<int>(sizeof(npsat_flow::WellSegmentMsg));
     std::vector<int> send_counts_b(n_proc, 0), recv_counts_b(n_proc, 0);
     std::vector<int> send_displs_b(n_proc, 0), recv_displs_b(n_proc, 0);
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
     {
         send_counts_b[r] = send_counts[r] * bytes_per;
         recv_counts_b[r] = recv_counts[r] * bytes_per;
@@ -311,9 +313,10 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
     out << ",(ze_0,Qe_0,Qwbf_0)...\n";
     out << std::setprecision(16) << std::scientific;
 
+    const int my_rank_int = static_cast<int>(my_rank);
     for (unsigned int w = 0; w < n_wells; ++w)
     {
-        if (static_cast<int>(well_owner_rank[w]) != my_rank)
+        if (static_cast<int>(well_owner_rank[w]) != my_rank_int)
             continue;
 
         const double Qtot = mnwells.pumping_rate(mnwells.wells[w].q_row);
@@ -373,11 +376,14 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
         out << "\n";
     }
     out.flush();
-    pcout << "Wellbore flow computation complete." << std::endl;
+    //pcout << "Wellbore flow computation complete." << std::endl;
 }
 
 template<int dim>
 void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix) const {
+    MPI_Barrier(mpi_communicator);
+    pcout << "\t Write wellbore segments as csv" << std::endl;
+    MPI_Barrier(mpi_communicator);
 
     const bool write_csv = uo.print_wellbore_segments_csv;
     const bool write_vtu = uo.print_wellbore_segments_vtu;
@@ -452,12 +458,12 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     {
         const unsigned int w = static_cast<unsigned int>(s.well_global_index);
         const int owner = static_cast<int>(well_owner_rank[w]);
-        AssertThrow(owner >= 0 && owner < n_proc, ExcInternalError());
+        AssertThrow(owner >= 0 && owner < static_cast<int>(n_proc), ExcInternalError());
         send_bins[owner].push_back(s);
     }
 
     std::vector<int> send_counts(n_proc, 0), recv_counts(n_proc, 0);
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
         send_counts[r] = static_cast<int>(send_bins[r].size());
 
     MPI_Alltoall(send_counts.data(), 1, MPI_INT,
@@ -466,7 +472,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
 
     std::vector<int> send_displs(n_proc, 0), recv_displs(n_proc, 0);
     int send_total=0, recv_total=0;
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
     {
         send_displs[r] = send_total; send_total += send_counts[r];
         recv_displs[r] = recv_total; recv_total += recv_counts[r];
@@ -474,7 +480,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
 
     std::vector<WellSegMsg2Z> send_flat;
     send_flat.reserve(send_total);
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
         for (const auto &s : send_bins[r])
             send_flat.push_back(s);
 
@@ -484,7 +490,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     std::vector<int> send_counts_b(n_proc), recv_counts_b(n_proc),
                    send_displs_b(n_proc), recv_displs_b(n_proc);
 
-    for (int r = 0; r < n_proc; ++r)
+    for (std::size_t r = 0; r < n_proc; ++r)
     {
         send_counts_b[r] = send_counts[r] * bytes_per;
         recv_counts_b[r] = recv_counts[r] * bytes_per;
@@ -531,6 +537,10 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
     const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << "So far so good 1" << std::endl;
+    MPI_Barrier(mpi_communicator);
+
     std::ostringstream csvname;
     csvname << prefix << "_wellbore_segments_rank_" << str_rank << "_step_" << step << ".csv";
     std::ofstream out;
@@ -544,9 +554,10 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     }
     std::vector<std::vector<WellSegFlowMsg>> send_back(n_proc);
 
+    const int my_rank_int = static_cast<int>(my_rank);
     for (unsigned int w=0; w<n_wells; ++w)
     {
-        if (static_cast<int>(well_owner_rank[w]) != my_rank)
+        if (static_cast<int>(well_owner_rank[w]) != my_rank_int)
             continue;
 
         auto it = by_well.find(static_cast<std::uint32_t>(w));
@@ -620,16 +631,20 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
             m.Qwbf_top = F_top[k];
 
             const int owner = static_cast<int>(segs[k].cell_owner_rank);
-            AssertThrow(owner >= 0 && owner < n_proc, ExcInternalError());
+            AssertThrow(owner >= 0 && owner < static_cast<int>(n_proc), ExcInternalError());
             send_back[owner].push_back(m);
         }
     }
     if (write_csv)
         out.flush();
 
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << "So far so good 2" << std::endl;
+    MPI_Barrier(mpi_communicator);
+
     // ---- back exchange counts
     std::vector<int> send_counts2(n_proc, 0), recv_counts2(n_proc, 0);
-    for (int r=0; r<n_proc; ++r)
+    for (std::size_t r=0; r<n_proc; ++r)
         send_counts2[r] = static_cast<int>(send_back[r].size());
 
     MPI_Alltoall(send_counts2.data(), 1, MPI_INT,
@@ -638,7 +653,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
 
     std::vector<int> send_displs2(n_proc, 0), recv_displs2(n_proc, 0);
     int send_total2 = 0, recv_total2 = 0;
-    for (int r=0; r<n_proc; ++r)
+    for (std::size_t r=0; r<n_proc; ++r)
     {
         send_displs2[r] = send_total2; send_total2 += send_counts2[r];
         recv_displs2[r] = recv_total2; recv_total2 += recv_counts2[r];
@@ -647,7 +662,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     // ---- flatten
     std::vector<WellSegFlowMsg> send_flat2;
     send_flat2.reserve(send_total2);
-    for (int r=0; r<n_proc; ++r)
+    for (std::size_t r=0; r<n_proc; ++r)
         for (const auto &m : send_back[r])
             send_flat2.push_back(m);
 
@@ -657,7 +672,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     const int bytes_per2 = static_cast<int>(sizeof(WellSegFlowMsg));
     std::vector<int> send_counts2_b(n_proc), recv_counts2_b(n_proc),
                      send_displs2_b(n_proc), recv_displs2_b(n_proc);
-    for (int r=0; r<n_proc; ++r)
+    for (std::size_t r=0; r<n_proc; ++r)
     {
         send_counts2_b[r] = send_counts2[r] * bytes_per2;
         recv_counts2_b[r] = recv_counts2[r] * bytes_per2;
@@ -671,6 +686,10 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
                   recv_counts2_b.data(), recv_displs2_b.data(), MPI_BYTE,
                   mpi_communicator);
 
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << "So far so good 3" << std::endl;
+    MPI_Barrier(mpi_communicator);
+
     // -----------------------------
     // 5) Output VTK using the two separated writers
     // -----------------------------
@@ -680,12 +699,22 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
         vtu << prefix << "_wellbore_segments_rank_" << str_rank << "_step_" << step << ".vtu";
         npsat_flow::write_wells_as_dataout_1d3(vtu.str(), vtk_segments);
     }
+
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << "So far so good 4" << std::endl;
+    MPI_Barrier(mpi_communicator);
+
     if (write_legacy_vtk)
     {
         std::ostringstream vtk;
         vtk << prefix << "_wellbore_segments_rank_" << str_rank << "_step_" << step << "_legacy.vtk";
         npsat_flow::write_wells_as_legacy_vtk_polydata(vtk.str(), vtk_segments);
     }
+
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << "So far so good 5" << std::endl;
+    MPI_Barrier(mpi_communicator);
+
     if (write_trace_binary)
     {
         const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
@@ -704,6 +733,8 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
         npsat_flow::write_pod(bout, version);
         npsat_flow::write_pod(bout, step_u32);
 
+        // Important: write this even when recv_flat2 is empty.
+        // npsat_trace can then read nrec == 0 and skip records.
         const std::uint64_t nrec = static_cast<std::uint64_t>(recv_flat2.size());
         npsat_flow::write_pod(bout, nrec);
 
@@ -719,6 +750,9 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
 
         bout.flush();
     }
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << "So far so good 6" << std::endl;
+    MPI_Barrier(mpi_communicator);
 }
 
 template <int dim>
@@ -734,7 +768,7 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
     if (!write_csv && !write_solution_cell_vtu && !write_cellcenters_vtk)
         return;
 
-    pcout << "Writing CELL-based results to VTU/CSV at output step "
+    pcout << "\t Writing CELL-based results to VTU/CSV at output step "
           << time_tracking.simulation_step() << "..." << std::endl;
 
     // -----------------------------
@@ -769,9 +803,9 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
     TrilinosWrappers::MPI::Vector dS_out;
     TrilinosWrappers::MPI::Vector Qw_out;
 
-    head_out.reinit(head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
-    dS_out.reinit  (head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
-    Qw_out.reinit  (head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
+    head_out.reinit(head_locally_owned_dofs, mpi_communicator); //head_locally_relevant_dofs,
+    dS_out.reinit  (head_locally_owned_dofs, mpi_communicator); //head_locally_relevant_dofs,
+    Qw_out.reinit  (head_locally_owned_dofs, mpi_communicator); //head_locally_relevant_dofs,
 
     // Optional per-face DG0 vectors (each face quantity stored as one DG0 field)
     std::array<TrilinosWrappers::MPI::Vector, GeometryInfo<dim>::faces_per_cell> qface_out;
@@ -780,15 +814,15 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
 
     if (write_q_to_vtu)
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-            qface_out[f].reinit(head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
+            qface_out[f].reinit(head_locally_owned_dofs,  mpi_communicator);//head_locally_relevant_dofs,
 
     if (write_lambda_to_vtu)
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-            lambda_out[f].reinit(head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
+            lambda_out[f].reinit(head_locally_owned_dofs,  mpi_communicator); //head_locally_relevant_dofs,
 
     if (write_area_to_vtu)
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-            area_out[f].reinit(head_locally_owned_dofs, head_locally_relevant_dofs, mpi_communicator);
+            area_out[f].reinit(head_locally_owned_dofs,  mpi_communicator); //head_locally_relevant_dofs,
 
     // -----------------------------
     // Face quadrature for flux integration
@@ -818,8 +852,8 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
         //const auto flux_cell  = tria_cell->as_dof_handler_iterator(dof_handler_flux);
         //const auto head_cell  = tria_cell->as_dof_handler_iterator(dof_handler_head);
         //const auto trace_cell = tria_cell->as_dof_handler_iterator(dof_handler_trace);
-        typename DoFHandler<dim>::active_cell_iterator flux_cell(&triangulation, tria_cell->level(), tria_cell->index(), &dof_handler_trace);
-        typename DoFHandler<dim>::active_cell_iterator head_cell(&triangulation, tria_cell->level(), tria_cell->index(), &dof_handler_trace);
+        typename DoFHandler<dim>::active_cell_iterator flux_cell(&triangulation, tria_cell->level(), tria_cell->index(), &dof_handler_flux);
+        typename DoFHandler<dim>::active_cell_iterator head_cell(&triangulation, tria_cell->level(), tria_cell->index(), &dof_handler_head);
         typename DoFHandler<dim>::active_cell_iterator trace_cell(&triangulation, tria_cell->level(), tria_cell->index(), &dof_handler_trace);
 
 
@@ -905,7 +939,7 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
         //     Qwbf_cell = Σ link.Qwbf    (wellbore flow THROUGH TOP of this cell)
         // --------------------------------------------------------------
         double Qw_sum = 0.0;
-        double Qwbf_sum = 0.0;
+        //double Qwbf_sum = 0.0;
 
         auto it = std::lower_bound(
             local_cell_well_map.begin(), local_cell_well_map.end(),
@@ -947,11 +981,16 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
 
     if (write_csv)
         csv.close();
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << " finished writing " << csv_name.str() << std::endl;
+    MPI_Barrier(mpi_communicator);
 
     // Finalize distributed vectors (owned inserts)
     head_out.compress(VectorOperation::insert);
     dS_out.compress(VectorOperation::insert);
     Qw_out.compress(VectorOperation::insert);
+
+    MPI_Barrier(mpi_communicator);
 
     if (write_q_to_vtu)
         for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
@@ -991,43 +1030,51 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
         data_out.attach_dof_handler(dof_handler_head);
 
         // DG0 fields -> should become <CellData>
-        data_out.add_data_vector(head_out, "head", DataOut<dim>::type_cell_data);
-        data_out.add_data_vector(Qw_out,   "Qw",   DataOut<dim>::type_cell_data);
-        data_out.add_data_vector(dS_out,   "dS",   DataOut<dim>::type_cell_data);
+        data_out.add_data_vector(head_out, "head");
+        data_out.add_data_vector(Qw_out,   "Qw");
+        data_out.add_data_vector(dS_out,   "dS");
 
 
         if (write_q_to_vtu)
             for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-                data_out.add_data_vector(qface_out[f], "q_" + std::to_string(f),
-                                         DataOut<dim>::type_cell_data);
+                data_out.add_data_vector(qface_out[f], "q_" + std::to_string(f)); //, DataOut<dim>::type_cell_data
 
         if (write_lambda_to_vtu)
             for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-                data_out.add_data_vector(lambda_out[f], "l_" + std::to_string(f),
-                                         DataOut<dim>::type_cell_data);
+                data_out.add_data_vector(lambda_out[f], "l_" + std::to_string(f));//, DataOut<dim>::type_cell_data
 
         if (write_area_to_vtu)
             for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
-                data_out.add_data_vector(area_out[f], "A_" + std::to_string(f),
-                                         DataOut<dim>::type_cell_data);
+                data_out.add_data_vector(area_out[f], "A_" + std::to_string(f)); //, DataOut<dim>::type_cell_data
+
+        // MPI_Barrier(mpi_communicator);
+        // std::cout << "Rank " << my_rank << " is here 1" << std::endl;
+        MPI_Barrier(mpi_communicator);
 
         data_out.build_patches(/*n_subdivisions=*/1);
 
+        // MPI_Barrier(mpi_communicator);
+        // std::cout << "Rank " << my_rank << " is here 2" << std::endl;
+        MPI_Barrier(mpi_communicator);
+
+        const std::string output_dir = output_root_path();
         std::ostringstream base;
-        base << prefix << "_solution_cell_rank_" << str_rank << "_step_" << step;
+        base << uo.output_prefix << "_solution_cell_step_" << step;
 
         if (Utilities::MPI::n_mpi_processes(mpi_communicator) == 1)
         {
+            const std::string filename = npsat_flow::join_paths(output_dir, base.str() + ".vtu");
+            std::ofstream out(filename.c_str());
+            AssertThrow(out.good(), ExcMessage("Could not open VTU: " + filename));
             // std::ofstream out((base.str() + ".vtk").c_str());
             // AssertThrow(out.good(), ExcMessage("Could not open VTK: " + base.str() + ".vtk"));
             // data_out.write_vtk(out);
-            std::ofstream out((base.str() + ".vtu").c_str());
             data_out.write_vtu(out);
         }
         else
         {
             data_out.write_vtu_with_pvtu_record(
-                "./",
+            output_dir,
                 base.str(),
                 time_tracking.simulation_step(),
                 mpi_communicator,
@@ -1035,6 +1082,10 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
                 /*n_digits_for_cycle=*/3);
         }
     }
+
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << " is here 3" << std::endl;
+    MPI_Barrier(mpi_communicator);
 
     if (write_cellcenters_vtk) {
         // ------------------------------------------------------------
@@ -1169,6 +1220,9 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
 
         vtk.close();
     }
+    // MPI_Barrier(mpi_communicator);
+    // std::cout << "Rank " << my_rank << " Done with output results" << std::endl;
+    MPI_Barrier(mpi_communicator);
 }
 
 #endif //NPSAT_FLOW_WRITE_OUTPUT_IMPL_H

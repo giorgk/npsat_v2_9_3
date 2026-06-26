@@ -158,6 +158,7 @@ namespace npsat_flow {
         Sim_uo sim_opt;
         Solver_uo solver_opt;
         NonlinearControls NLC;
+        int verbose_level = 0;
     };
 
     template <typename T>

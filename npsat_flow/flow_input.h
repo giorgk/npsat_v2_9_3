@@ -33,7 +33,7 @@ namespace npsat_flow {
         : mpi_communicator(MPI_COMM_WORLD),
           pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
     {
-        Version = "0.0.02";
+        Version = "0.0.03";
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
@@ -177,6 +177,7 @@ namespace npsat_flow {
 
             //[misc]
             ("Misc.Print_matrices", po::value<int>()->default_value(1), "Print matrices Debug only")
+            ("Misc.Verbose_level", po::value<int>()->default_value(0), "How much output you want [0 1 2]")
 
         ;
 
@@ -334,6 +335,7 @@ namespace npsat_flow {
 
                 { //Misc
                     uo.print_matrices = vm_cfg["Misc.Print_matrices"].as<int>() == 1;
+                    uo.verbose_level = vm_cfg["Misc.Verbose_level"].as<int>();
                 }
             }
             catch (std::exception& E)

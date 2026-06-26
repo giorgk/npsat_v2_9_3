@@ -180,16 +180,14 @@ void NPSAT_FLOW<dim>::compute_heads(){
     const double global_max = Utilities::MPI::max(local_head_max, mpi_communicator);
     const double global_sum = Utilities::MPI::sum(local_head_sum, mpi_communicator);
     const unsigned int global_count = Utilities::MPI::sum(local_head_count, mpi_communicator);
-    const double global_mean =
-        (global_count > 0 ? global_sum / static_cast<double>(global_count) : 0.0);
+    const double global_mean = (global_count > 0 ? global_sum / static_cast<double>(global_count) : 0.0);
     const double global_abs_head_max =
         Utilities::MPI::max(local_abs_head_max, mpi_communicator);
 
     pcout << "  Head range: [" << global_min << ", " << global_max
           << "] m, Mean: " << global_mean << " m" << std::endl;
 
-    if (std::abs(local_abs_head_max - global_abs_head_max) <=
-        1e-12 * std::max(1.0, global_abs_head_max))
+    if (uo.verbose_level > 1 &&std::abs(local_abs_head_max - global_abs_head_max) <= 1e-12 * std::max(1.0, global_abs_head_max))
     {
         std::cout << std::setprecision(16)
                   << "  Head recovery max |h| diagnostic on rank " << my_rank << ":\n"
@@ -282,8 +280,8 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
     if (ref_norm < 1e-30)
         ref_norm = 1.0;
 
-    if (std::abs(local_update_max - update_norm) <=
-        1e-12 * std::max(1.0, update_norm))
+    if (uo.verbose_level > 1 && (std::abs(local_update_max - update_norm) <=
+        1e-12 * std::max(1.0, update_norm)))
     {
         std::cout << std::setprecision(16)
                   << "  Head update max diagnostic on rank " << my_rank << ":\n"
@@ -318,9 +316,20 @@ bool NPSAT_FLOW<dim>::check_nonlinear_convergence(const double update_norm, cons
     const double threshold = uo.NLC.abs_tol_update  + uo.NLC.rel_tol_update * ref;
 
     // update_norm is assumed to already be a *global* max norm
-    // (as returned by compute_update_norm()).
-    pcout << "update_norm : " << update_norm << " Threshold : " << threshold << std::endl;
+    // (as returned by compute_update_norm())
     const bool converged = (update_norm <= threshold);
+
+    pcout << "+--------------------------------------+\n"
+          << "| update_norm : " << std::fixed << std::setprecision(6)
+          << std::setw(12) << update_norm << " |\n"
+          << "| threshold   : "
+          << std::setw(12) << threshold << " |\n"
+          << "+--------------------------------------+\n"
+          << "| Status      : "
+          << (converged ? "CONVERGED     " : "NOT CONVERGED ")
+          << "|\n"
+          << "+--------------------------------------+"
+          << std::defaultfloat << std::endl;
 
     return converged;
 }
@@ -456,6 +465,10 @@ template <int dim>
 void NPSAT_FLOW<dim>::compute_fluxes(){
     pcout << "Recovering fluxes from trace and head solutions..." << std::endl;
 
+    TrilinosWrappers::MPI::Vector q_owned;
+    q_owned.reinit(flux_locally_owned_dofs, mpi_communicator);
+    q_owned = 0.0;
+
     q_new = 0;
 
     const unsigned int n_trace_dofs      = fe_trace.n_dofs_per_cell();
@@ -546,7 +559,7 @@ void NPSAT_FLOW<dim>::compute_fluxes(){
         // Step 5: Copy to global vector // Scatter to global q_new
         for (unsigned int i = 0; i < n_flux_dofs; ++i)
         {
-            q_new[flux_dof_indices[i]] = q_local(i);
+            q_owned[flux_dof_indices[i]] = q_local(i);
         }
 
         // Calculate the Cell - Well exchange
@@ -577,7 +590,7 @@ void NPSAT_FLOW<dim>::compute_fluxes(){
                 // Update links
                 for (auto& link : it->second) {
                     const unsigned int w_id = mnwells.wells[link.well_global_index].global_index;
-                    const double hw = well_solution[w_id];
+                    const double hw = well_solution_ghosted[w_id];
                     const double cwc =
                         npsat_flow::effective_well_link_conductance(link,
                                                                   nl_cell_data.h_e,
@@ -600,7 +613,9 @@ void NPSAT_FLOW<dim>::compute_fluxes(){
         }
     }
     // Update ghost values for parallel
-    q_new.compress(VectorOperation::insert);
+    q_owned.compress(VectorOperation::insert);
+
+    q_new = q_owned;
     q_new.update_ghost_values();
 
 }

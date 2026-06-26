@@ -147,6 +147,7 @@ template<int dim>
 void NPSAT_FLOW<dim>::export_cell_well_map_binary_once(const std::string &prefix) const {
     if (!uo.save_trace_data || time_tracking.simulation_step() != 0)
         return;
+    pcout << "\t export_cell_well_map_binary_once..." <<std::endl;
 
     const std::string rank_s = dealii::Utilities::int_to_string(my_rank, 4);
     const std::string fname  = prefix + "_cellwell_map_rank_" + rank_s + ".bin";
@@ -212,6 +213,7 @@ void NPSAT_FLOW<dim>::export_cell_well_map_binary_once(const std::string &prefix
 
 template<int dim>
 void NPSAT_FLOW<dim>::save_water_table_per_step(const std::string &prefix) const {
+    pcout << "\t save_water_table_per_step..." << std::endl;
 
     const unsigned int step_no = time_tracking.simulation_step();
     const std::string step_s   = Utilities::int_to_string(step_no, 3);
@@ -354,6 +356,7 @@ template <int dim>
 void NPSAT_FLOW<dim>::save_velocity_per_step(const std::string &prefix) const {
     if (!uo.save_trace_data)
         return;
+    pcout << "\t save_velocity_per_step..." << std::endl;
     TrilinosWrappers::MPI::Vector vface_global;
     build_and_write_vface_rt0_per_step(prefix, vface_global);
 }
@@ -373,7 +376,7 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
     // Stored quantity:
     //   v_n = (1 / |F|) \int_F q_h \cdot n_cell \, dS
     // with sign outward relative to the WRITING cell.
-    vface_global.reinit(flux_locally_owned_dofs, flux_locally_relevant_dofs, mpi_communicator);
+    vface_global.reinit(flux_locally_owned_dofs,  mpi_communicator);//flux_locally_relevant_dofs,
     vface_global = 0.0;
 
     // Face quadrature and FEFaceValues (same as in output_results)
