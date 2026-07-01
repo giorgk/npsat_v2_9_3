@@ -56,6 +56,8 @@ namespace npsat_flow {
             const RefinementTargets &targets,
             const MPI_Comm &mpi_communicator);
 
+        static void write_parallel_coarse_tria_to_files(const TriaType &tria, const std::string &prefix, const MPI_Comm &mpi_communicator);
+
     private:
         static void build_box_grid(TriaType &triangulation, const user_options& uo,const MPI_Comm& mpi_communicator);
         static void build_file_grid(TriaType &triangulation, const user_options& uo, const MPI_Comm& mpi_communicator);
@@ -912,6 +914,68 @@ namespace npsat_flow {
         }
 
         return false;
+    }
+
+    template<int dim>
+    void GridBuilder<dim>::write_parallel_coarse_tria_to_files(const TriaType &tria, const std::string &prefix, const MPI_Comm &mpi_communicator) {
+        int my_rank;
+        MPI_Comm_rank(mpi_communicator, &my_rank);
+
+        if (my_rank == 0) {
+            const std::string vertex_file = prefix + "_coarse_tria_vertices.dat";
+            const std::string cell_file   = prefix + "_coarse_tria_cells.dat";
+
+            const std::vector<Point<dim> > vertices = tria.get_vertices();
+
+            {
+                std::ofstream out(vertex_file.c_str());
+                AssertThrow(out.good(), dealii::ExcMessage("Cannot write file: " + vertex_file));
+
+                std::cout << "Writing Vertices in " << vertex_file << std::endl;
+
+                out << vertices.size() << " " << dim << "\n";
+                out << std::setprecision(17);
+
+                for (unsigned int i = 0; i < vertices.size(); ++i)
+                {
+                    out << i;
+                    for (unsigned int d = 0; d < dim; ++d)
+                        out << " " << vertices[i][d];
+                    out << "\n";
+                }
+            }
+
+            {
+                std::ofstream out(cell_file.c_str());
+                AssertThrow(out.good(), dealii::ExcMessage("Cannot write file: " + cell_file));
+
+                std::cout << "Writing Cells in " << vertex_file << std::endl;
+
+                const unsigned int vpc = GeometryInfo<dim>::vertices_per_cell;
+
+                out << tria.n_global_active_cells() << " " << vpc << "\n";
+
+                unsigned int cid = 0;
+
+                for (typename TriaType::active_cell_iterator
+                         cell = tria.begin_active();
+                     cell != tria.end();
+                     ++cell)
+                {
+                    out << cid;
+
+                    for (unsigned int j = 0; j < vpc; ++j)
+                        out << " " << cell->vertex_index(j);
+
+                    out << "\n";
+                    ++cid;
+                }
+            }
+            std::cout << "Wrote coarse triangulation files:\n"
+                      << "  " << vertex_file << "\n"
+                      << "  " << cell_file << std::endl;
+        }
+        MPI_Barrier(mpi_communicator);
     }
 }
 

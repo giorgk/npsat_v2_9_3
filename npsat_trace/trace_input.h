@@ -81,17 +81,21 @@ namespace npsat_trace {
 
         //[Output]
         ("Output.Prefix", po::value<std::string>(), "Main prefix for output files")
+        ("Output.Print_loaded_tria", po::value<int>()->default_value(0), "Print the loaded triangulation for debug")
+        ("Output.Load_tria_exit", po::value<int>()->default_value(0), "Exit after Loading triangulationa")
+
+
 
         ;
 
         if (vm_cmd.count("help"))
         {
-            pcout << " To run NPSAT_v2 specify the configuration file as" << std::endl;
+            pcout << " To run NPSAT_TRACE specify the configuration file as" << std::endl;
             pcout << "-c config" << std::endl << std::endl;;
             pcout << "Other command line options are:" << std::endl;
             pcout << commandLineOptions << std::endl;
 
-            pcout << "NPSAT_v2 configuration file options:" << std::endl;
+            pcout << "NPSAT_TRACE configuration file options:" << std::endl;
             pcout << "(All options are case sensitive)" << std::endl;
             pcout << "------------------------------" << std::endl;
             pcout << config_options << std::endl;
@@ -111,6 +115,8 @@ namespace npsat_trace {
                 }
                 {// Output
                     tr_opt.output_prefix = vm_cfg["Output.Prefix"].as<std::string>();
+                    tr_opt.write_loaded_tria = vm_cfg["Output.Print_loaded_tria"].as<int>();
+                    tr_opt.exit_after_load_tria = vm_cfg["Output.Load_tria_exit"].as<int>() != 0;
                 }
                 {// Simulation
                     tr_opt.delta_time_file = vm_cfg["Simulation.Delta_time_file"].as<std::string>();

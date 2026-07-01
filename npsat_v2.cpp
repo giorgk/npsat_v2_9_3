@@ -118,6 +118,7 @@ private:
                                      const double omega) const;
 
   // Save data for trace app
+  void save_triangulation() const;
   void save_velocity_io_mapping_once() const;
   void export_cell_well_map_binary_once(const std::string &prefix) const;
   void save_water_table_per_step(const std::string &prefix) const;

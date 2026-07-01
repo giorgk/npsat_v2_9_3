@@ -134,6 +134,10 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   {//Create initial triangulation
     npsat_flow::GridBuilder<dim>::build(triangulation, uo, mpi_communicator);
     pcout << "Initial triangulation cells: " << triangulation.n_global_active_cells() << std::endl;
+    if (uo.save_trace_data) {
+      MPI_Barrier(mpi_communicator);
+      npsat_flow::GridBuilder<dim>::write_parallel_coarse_tria_to_files(triangulation,output_prefix_path(), mpi_communicator);
+    }
 
   }
 
@@ -163,6 +167,9 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
 
   if (uo.print_mesh_with_prop)
     write_final_mesh_with_properties();
+
+  if (uo.save_trace_data)
+    save_triangulation();
 }
 
 template <int dim>
@@ -406,8 +413,33 @@ void NPSAT_FLOW<dim>::write_final_mesh_with_properties() const {
 
     data_out.write_pvtu_record(master, piece_names);
   }
+}
 
+template <int dim>
+void NPSAT_FLOW<dim>::save_triangulation() const {
+  const std::string base = output_prefix_path() + "_dist_tria";
+  
+  pcout << "Saving parallel triangulation: " << base << " (per-rank files)" << std::endl;
 
+  triangulation.save(base.c_str());
+
+  for (unsigned int r = 0; r < n_proc; ++r)
+  {
+    MPI_Barrier(mpi_communicator);
+
+    if (my_rank == r)
+    {
+      std::cout << "Rank " << my_rank
+                << ": locally owned active cells = "
+                << triangulation.n_locally_owned_active_cells()
+                << ", global active cells = "
+                << triangulation.n_global_active_cells()
+                << std::endl;
+    }
+    MPI_Barrier(mpi_communicator);
+  }
+
+  MPI_Barrier(mpi_communicator);
 }
 
 #endif //NPSAT_FLOW_PREPARE_IMPL_H
