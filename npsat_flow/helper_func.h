@@ -146,6 +146,7 @@ namespace npsat_flow{
     template <typename T>
     inline T clamp_(T value, T lo, T hi)
     {
+        assert(lo <= hi);
         return std::max(lo, std::min(value, hi));
     }
 

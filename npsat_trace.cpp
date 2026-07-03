@@ -23,6 +23,7 @@
 #include "npsat_trace/rt0_face_map.h"
 #include "npsat_trace/cached_velocity.h"
 #include "npsat_trace/particle_reader.h"
+#include "npsat_trace/reader_helpers.h"
 
 
 
@@ -42,6 +43,12 @@ private:
   void setup_particles();
   void load_velocity_io_mapping();
   void read_cell_well_map_binary_once();
+  void distribute_particles(const std::vector<npsat_trace::ParticleSeed> &seeds0);
+  void load_data_step(const std::string & file_prefix, unsigned int step);
+  void load_vface_rt0_values_step(const std::string &prefix, const unsigned int step_no);
+  void read_particle_well_flows_for_step(const std::string &prefix, unsigned int step);
+  void read_water_table_for_step(const std::string &prefix, unsigned int step);
+  npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(const typename DoFHandler<dim>::active_cell_iterator &cell);
 
 
   MPI_Comm mpi_communicator;
@@ -64,6 +71,8 @@ private:
   std::vector<bool> all_cells_cache_valid;
   std::vector<std::vector<npsat_trace::CellWellLink>> slot_cell_well_links;
   std::vector<double> slot_water_table_elevation;
+  std::unordered_map<npsat_trace::FlowKey, npsat_trace::WellFlowRecord, npsat_trace::FlowKeyHash> flows_by_cell_well;
+
 
   npsat_trace::Trace_options topt;
   ConditionalOStream pcout;
@@ -95,6 +104,7 @@ NPSAT_TRACE<dim>::NPSAT_TRACE(const npsat_trace::Trace_options &topt_in)
 }
 
 #include "npsat_trace/main_class_impl/npsat_trace_load.impl.h"
+#include "npsat_trace/main_class_impl/npsat_trace_main.impl.h"
 
 
 template <int dim>
@@ -115,7 +125,367 @@ void NPSAT_TRACE<dim>::run() {
   const std::vector<double> delta_time_values = npsat_trace::read_delta_time_file(topt.delta_time_file);
   const unsigned int N_time_steps = static_cast<unsigned int>(delta_time_values.size());
 
+  npsat_trace::ParticleReader reader(topt.n_paticles_parallel);
+  if (my_rank == 0)
+    reader.open(topt.particles_file);
+  int iter = 0;
 
+  while (true) {
+    // ---------------------------
+    // (A) READ NEXT CHUNK (rank 0) + DISTRIBUTE
+    // ---------------------------
+    std::vector<npsat_trace::ParticleSeed> seeds0;
+    if (my_rank == 0)
+      seeds0 = reader.read_next_chunk();
+
+    // global stop condition (rank 0 reached EOF and returned empty)
+    int have = (my_rank == 0 && !seeds0.empty()) ? 1 : 0;
+    have = Utilities::MPI::max(have, mpi_communicator);
+    if (!have) break;
+
+    distribute_particles(seeds0);
+
+    // ------------------------------------------------------------
+    // Prepare per-rank output file for this iter
+    // ------------------------------------------------------------
+    const std::string rank_str = Utilities::int_to_string(my_rank, 4);
+    const std::string iter_str = Utilities::int_to_string(iter, 4);
+    const std::string fname = topt.output_prefix + "_streamlines_rank_" + rank_str + "_iter_" + iter_str + ".dat";
+
+    std::ofstream sl_out(fname, std::ios::app);
+    AssertThrow(sl_out.good(), ExcMessage("Could not open streamline output: " + fname));
+
+    // ---------------------------
+    // (B) LOOP OVER TIME STEPS
+    // ---------------------------
+    unsigned int step = 0;
+    while (true) {
+      load_data_step(topt.input_prefix, step);
+      // read the size of this timestep
+      const double time_step_size = delta_time_values[step];
+
+      // Initialize per-step remaining time for particles that are alive at step start
+      // Set for all particles the time step equal to the size of this time step.
+      // All the particles at this point should be active. If they have been terminated
+      // they should be removed from the particle_handler
+      for (auto p = particle_handler.begin(); p != particle_handler.end(); ++p)
+      {
+        auto props = p->get_properties();
+        props[npsat_trace::pState] = 1.0;
+        props[npsat_trace::pDtRemaining] = time_step_size;
+      }
+
+      // ------------------------------------------------------------
+      // Particle loop within this time step
+      // Repeat: trace locally -> exchange ghost -> until step done globally
+      // ------------------------------------------------------------
+      unsigned int exchange_iter = 0;
+
+      while (true) {
+        // --------------------------------------------------------
+        // 1) TRACE LOCALLY UNTIL (step done) OR (hit ghost) OR (terminate)
+        //    Collect ghost-hit particles into send buffers, remove locally.
+        // --------------------------------------------------------
+        // Count particles that still have dt remaining on this rank.
+        // (This is what controls step convergence.)
+        unsigned int not_done_local = 0;
+
+        // --------------------------------------------------------
+        // 1) TRACE LOCALLY
+        //    - Trace only when current cell is locally owned
+        //    - Stop tracing when moved to non-owned cell (ghost/foreign)
+        //    - Remove particle if it leaves domain (safe erase pattern)
+        // --------------------------------------------------------
+        auto particle = particle_handler.begin();
+        while (particle != particle_handler.end()) {
+          auto props = particle->get_properties();
+          // Skip the particles that have done with this step
+          if (props[npsat_trace::pState] == 2.0 || props[npsat_trace::pState] == -1.0) {
+            ++particle;
+            continue;
+          }
+          // Locate surrounding cell
+          const typename Triangulation<3, 3>::cell_iterator tria_cell = particle->get_surrounding_cell(triangulation);
+          //auto current_cell = tria_cell->as_dof_handler_iterator(dof_handler_flux);
+          typename DoFHandler<dim>::active_cell_iterator current_cell(&triangulation, tria_cell->level(), tria_cell->index(), &dof_handler_flux);
+
+          // This should be highly unlikely
+          // If not locally owned, do not trace on this rank.
+          // It will be migrated by sort_particles_into_subdomains_and_cells().
+          if (!current_cell->is_locally_owned()) {
+            // This particle is not done for the step (it still has dt_remaining),
+            // but we cannot progress it here.
+            if (props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps)
+              ++not_done_local;
+
+            ++particle;
+            continue;
+          }
+
+          double &dt_remaining = props[npsat_trace::pDtRemaining];
+          if (dt_remaining <= topt.sim_opt.dt_eps){
+            // This particle already finished this step on this rank
+            props[npsat_trace::pState] = 2.0;
+            ++particle;
+            continue;
+          }
+
+          std::ofstream dbg_out;
+          if (n_proc == 1)
+          {
+            const std::string f_dbg_name = "dbg_particles.dat";
+            dbg_out.open(f_dbg_name, std::ios::trunc);
+          }
+
+          // -----------------------------
+          // Inner tracing loop
+          // -----------------------------
+          // This particle still has to walk this step
+          ++not_done_local;
+
+          const double Eid = props[npsat_trace::pEid];
+          const double Sid = props[npsat_trace::pSid];
+          //std::cout << "Particle Eid: " << Eid << ", Sid: " << Sid << std::endl;
+
+          double &streamline_steps = props[npsat_trace::pStreamlineSteps];
+          double &particle_age = props[npsat_trace::pAge];
+
+          Point<dim> x_ref; // reference point
+          double vmag = 0.0;
+
+          // Trace this particle until walks for time_step_size or hits ghost or dead end
+          while (dt_remaining > topt.sim_opt.dt_eps) {
+
+            if (streamline_steps >= topt.sim_opt.n_max_streamline_steps) {
+              npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], Eid, Sid, npsat_trace::MAX_ITER);
+              props[npsat_trace::pState] = -1.0;
+              dt_remaining = 0.0;
+              break;
+            }
+
+            if (topt.sim_opt.max_age >= 0.0) {
+              if (particle_age >= topt.sim_opt.max_age) {
+                            npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::MAX_AGE);
+                            props[npsat_trace::pState] = -1.0;
+                            dt_remaining = 0.0;
+                            break;
+              }
+            }
+
+            streamline_steps += 1.0;
+
+            auto &cached_cell = get_or_build_cell_cache(current_cell);
+
+            const Point<dim> x = particle->get_location();
+
+            // --- WELL-BORE ROUTING (before velocity eval) ---
+            {
+
+            }
+
+            Tensor<1,dim> u;
+
+            // when we arrive here we have make sure that the point is inside this cell.
+            // so we can safely use the following method to get reference coordinates.
+            cached_cell.get_clamped_ref_coords(x, x_ref);
+
+            // Calculate the velocity
+            cached_cell.compute_velocity_at_particle(x_ref,u,vmag);
+
+            if (dbg_out.is_open())
+              dbg_out << x[0] << " " << x[1] << " " << x[2] << " " << u[0] << " " << u[1] << " " << u[2] << std::endl;
+
+            u = u/topt.sim_opt.porosity;
+            vmag = vmag/topt.sim_opt.porosity;
+
+            // Write this step
+            props[npsat_trace::pVmag] = vmag;
+            // Write current location ONLY if velocity is computed
+            npsat_trace::write_sample(sl_out, props[npsat_trace::pPid], Eid, Sid, x, vmag);
+
+            // TODO handle vmag<=0 or stuck logic properly; for now avoid division by zero
+            // It may be zero for a given step but nonzero in another step, therefore this logic needs update
+            // If the velocity is zero in this time step at this location then this particle shold be treated
+            // as if finished this step
+            if (vmag <= 0.0) {
+              npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_zero_velocity);
+              props[npsat_trace::pState] = -1.0;
+              dt_remaining = 0.0;
+              break;
+            }
+
+            // Calculate the step size using the current velocity
+            bool is_stuck = false;
+            // find the step size
+            npsat_trace::TimeStepControl tsc; //TODO make this user parameter
+            const double ds = npsat_trace::compute_step_size_ds<dim>(current_cell->diameter(),
+                                                        vmag, dt_remaining, time_step_size, tsc,is_stuck);
+
+            if (is_stuck) {
+              npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_stuck);
+              props[npsat_trace::pState] = -1.0;
+              dt_remaining = 0.0;
+              break;
+            }
+
+            // move the particle
+            const Tensor<1,dim> dir = u / vmag;
+            const Point<dim> x_proposed = x + ds * dir;
+            const double dt_move = ds / vmag;
+
+            if (particle_age + dt_move > topt.sim_opt.max_age) {
+              const double alpha_age = npsat_trace::clamp_((topt.sim_opt.max_age - particle_age) / dt_move, 0.0, 1.0);
+              const Point<dim> x_age = x + alpha_age * (x_proposed - x);
+              particle->set_location(x_age);
+              particle_age = topt.sim_opt.max_age;
+              npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::MAX_AGE);
+              props[npsat_trace::pState] = -1.0;
+              dt_remaining = 0.0;
+              break;
+            }
+
+            {
+              const unsigned int slot = static_cast<unsigned int>(current_cell->user_index());
+              if (slot < slot_water_table_elevation.size()) {
+                const double wt_z = slot_water_table_elevation[slot];
+                if (std::isfinite(wt_z)) {
+                  constexpr double wt_eps = 1e-10;
+                  const double z0 = x[dim-1] - wt_z;
+                  const double z1 = x_proposed[dim-1] - wt_z;
+
+                  if (z0 > wt_eps || (z0 <= wt_eps && z1 >= -wt_eps && z1 != z0)) {
+                    double alpha = 0.0;
+                    if (std::abs(z1 - z0) > wt_eps)
+                      alpha = npsat_trace::clamp_(-z0 / (z1 - z0), 0.0, 1.0);
+
+                    const Point<dim> x_wt = x + alpha * (x_proposed - x);
+                    particle->set_location(x_wt);
+                    particle_age += alpha * dt_move;
+                    npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_water_table);
+                    props[npsat_trace::pState] = -1.0;
+                    dt_remaining = 0.0;
+                    break;
+                  }
+                }
+              }
+            }
+
+            // Set the new location for the particle
+            particle->set_location(x_proposed);
+            // In the last step for this time step this should be configured so as to return dt_move ~0
+            dt_remaining -= dt_move;
+            particle_age += dt_move;
+            props[npsat_trace::pPid] += 1.0;
+
+            // This checks if the x_proposed is in the current cell.
+            // If it's not in search and returns the cell where the particle is currently
+            // However this cell can be locally owned or ghosted
+            bool cell_found = npsat_trace::check_cell_point<dim>(current_cell, x_proposed);
+
+            if (cell_found) {
+              // If it ended up in a ghost (or non-owned) cell, stop tracing here.
+              // Migration happens after we finish this local loop.
+              if (!current_cell->is_locally_owned()) {
+                // There is no need to update any status here.
+                // Once all particles are completed within this inner loop
+                // the particle will tranfsred to the correct processor where
+                // it wont be ghosted. In addition the dt_remaining will be carried over
+                if (dt_remaining < topt.sim_opt.dt_eps) {
+                  // If the last step entered a ghost element
+                  // we should call the walk completed.
+                  // we need to transfered this though but deal will take care of that
+                  props[npsat_trace::pState] = 2.0;
+                }
+                break;
+              }
+            }
+            else {
+              // If the cell has not been found then most likely it is outside of the domain.
+              // The only way this can be inside the domain is if it has skipped at
+              // least one lever of elements. In that case we should decrease the step size.
+              // We will search to find out which face has exited.
+              npsat_trace::FindHexExitResult er = npsat_trace::find_hex_exit(x, x_proposed,
+                cached_cell.get_xv(), cached_cell.get_yv(), cached_cell.get_zb(), cached_cell.get_zt());
+              if (er.found) {
+                int end_reason = npsat_trace::er_exited_domain;
+                const int exit_face = er.value.face_index;
+                if (exit_face >= 0 && exit_face <= 3) {
+                  end_reason = npsat_trace::er_lateral;
+                }
+                else if (exit_face == 4 && current_cell->at_boundary(4)) {
+                  end_reason = npsat_trace::er_bottom;
+                }
+                else if (exit_face == 5 && current_cell->at_boundary(5)) {
+                  end_reason = npsat_trace::er_water_table;
+                }
+                npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, end_reason);
+              }
+              else {
+                npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, -9); //TODO fix all the key values
+              }
+              props[npsat_trace::pState] = -1.0;   // mark for deletion
+              dt_remaining = 0.0;
+              break;
+            }
+
+            if (dt_remaining < topt.sim_opt.dt_eps)
+            {
+              //since this is days, a step of less than a day is too much should be treated as zero
+              props[npsat_trace::pState] = 2.0; // The particle completed its walk for this time step
+              break;
+            }
+          }// while loop tracing a particle within a time step
+          ++particle;
+        }// While loop iterating particles
+
+        // Clean up removed particles
+        bool removed_any = true;
+        while (removed_any) {
+          removed_any = false;
+
+          for (auto p = particle_handler.begin(); p != particle_handler.end(); ++p) {
+            auto props = p->get_properties();
+            if (props[npsat_trace::pState] == -1.0) {
+              particle_handler.remove_particle(p);
+              removed_any = true;
+              break; // restart loop because iterators/accessors may be invalid now
+            }
+          }
+        }
+
+        // --------------------------------------------------------
+        // 2) Global check: is THIS step finished for all particles?
+        // --------------------------------------------------------
+        const unsigned int not_done_global = Utilities::MPI::sum(not_done_local, mpi_communicator);
+        if (not_done_global == 0)
+        {
+          break;
+        }
+
+        // --------------------------------------------------------
+        // 3) Exchange/migrate particles that moved out of subdomain
+        // --------------------------------------------------------
+        particle_handler.sort_particles_into_subdomains_and_cells();
+
+        AssertThrow(++exchange_iter < topt.sim_opt.n_max_proc_exchanges,
+            ExcMessage("Exceeded max exchange iterations in step " +
+                       std::to_string(step) + "."));
+
+      }// While loop until all particles terminate within this step
+
+      // ------------------------------------------------------------
+      // Optional: If no particles remain globally, stop time cycling
+      // ------------------------------------------------------------
+      const unsigned int n_local  = particle_handler.n_locally_owned_particles();
+      const unsigned int n_global = Utilities::MPI::sum(n_local, mpi_communicator);
+      if (n_global == 0) {
+        break;
+      }
+      // Advance time step cyclically (your requirement)
+      step = (step + 1) % N_time_steps;
+    }// while loop over time steps
+    iter++;
+  } // End of main while loop
 }
 
 template <int dim>
@@ -129,12 +499,6 @@ void NPSAT_TRACE<dim>::setup_particles() {
   // Optional but useful diagnostics
   pcout << "ParticleHandler initialized. Locally owned active cells: "
         << triangulation.n_locally_owned_active_cells() << std::endl;
-
-  npsat_trace::ParticleReader reader(topt.n_paticles_parallel);
-  if (my_rank == 0)
-    reader.open(topt.particles_file);
-  int iter = 0;
-
 }
 
 
