@@ -161,6 +161,14 @@ namespace npsat_trace {
         {}
     };
 
+    template<int dim>
+    struct WellBoreTraceResults
+    {
+        bool terminate;
+        typename dealii::DoFHandler<dim>::active_cell_iterator new_cell;
+        dealii::Point<dim> new_pos;
+    };
+
 }
 
 #endif //NPSAT_V2_TRACE_STRUCTURES_H

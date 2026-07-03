@@ -183,6 +183,7 @@ namespace npsat_trace {
         Tensor<1, dim> interpolate_rt0_on_subcell(const unsigned int s, const double rx, const double ry, const double rz) const;
 
         bool compute_reference_point(const Point<3> &x_phys,Point<3> &x_ref) const;
+        Point<dim> map_reference_point_to_physical(const Point<dim> &x_ref, bool space01 = false) const;
 
 
         CellIt cell;
@@ -214,6 +215,9 @@ namespace npsat_trace {
 
     };
 
+    template <int dim>
+    constexpr unsigned int CellVelocityCacheRT0Split3D<dim>::perm_ccw[4];
+
     template<int dim>
     void CellVelocityCacheRT0Split3D<dim>::init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
         const TrilinosWrappers::MPI::Vector &vface) {
@@ -228,7 +232,7 @@ namespace npsat_trace {
         AssertThrow(cell->is_active(), dealii::ExcMessage("Expected active cell."));
         AssertThrow(cell->is_locally_owned(), dealii::ExcMessage("Expected locally owned cell."));
 
-        const unsigned int slot = static_cast<unsigned int>(cell->user_index());
+        //const unsigned int slot = static_cast<unsigned int>(cell->user_index());
 
         // Step 1: build canonical 2x2 face-subface values for all 6 parent faces
         for (unsigned int f=0; f<GeometryInfo<dim>::faces_per_cell; ++f) {
@@ -1137,6 +1141,65 @@ namespace npsat_trace {
                 v >= -1.001 && v <= 1.001 &&
                 w >= -1.001 && w <= 1.001);
 
+    }
+
+    template <int dim>
+    Point<dim> CellVelocityCacheRT0Split3D<dim>::map_reference_point_to_physical(const Point<dim> &x_ref, bool space01) const {
+        static_assert(dim == 3, "map_reference_point_to_physical() is implemented for dim=3.");
+
+        // Q1/trilinear map for an extruded hex defined by bottom quad (xv,yv,zb)
+        // and top quad (xv,yv,zt). Canonical corner order:
+        // bottom: 0=BL,1=BR,2=TR,3=TL and top: +4
+        //
+        // Cached arrays xv,yv,zb,zt are assumed to be in deal.II vertex indexing.
+        // We reorder them through the same ring used for the wireframe.
+        const int ring[4] = {0, 1, 3, 2};
+        const auto lerp = [](const double a, const double b, const double t)
+        {
+            return a * (1.0 - t) + b * t;
+        };
+
+        // x_ref is assumed in [-1,1]^3
+        double u = x_ref[0];
+        double v = x_ref[1];
+        double w = x_ref[2];
+        if (space01)
+        {
+            u = 2.0 * x_ref[0] - 1.0;
+            v = 2.0 * x_ref[1] - 1.0;
+            w = 2.0 * x_ref[2] - 1.0;
+        }
+
+        // Q1 shape functions on the quad in (u,v)
+        const double N0 = 0.25 * (1.0 - u) * (1.0 - v);
+        const double N1 = 0.25 * (1.0 + u) * (1.0 - v);
+        const double N2 = 0.25 * (1.0 + u) * (1.0 + v);
+        const double N3 = 0.25 * (1.0 - u) * (1.0 + v);
+
+        const int i0 = ring[0];
+        const int i1 = ring[1];
+        const int i2 = ring[2];
+        const int i3 = ring[3];
+
+        // bottom surface
+        const double xb = N0 * xv[i0] + N1 * xv[i1] + N2 * xv[i2] + N3 * xv[i3];
+        const double yb = N0 * yv[i0] + N1 * yv[i1] + N2 * yv[i2] + N3 * yv[i3];
+        const double zb_ = N0 * zb[i0] + N1 * zb[i1] + N2 * zb[i2] + N3 * zb[i3];
+
+        // top surface
+        const double xt = N0 * xv[i0] + N1 * xv[i1] + N2 * xv[i2] + N3 * xv[i3];
+        const double yt = N0 * yv[i0] + N1 * yv[i1] + N2 * yv[i2] + N3 * yv[i3];
+        const double zt_ = N0 * zt[i0] + N1 * zt[i1] + N2 * zt[i2] + N3 * zt[i3];
+
+        // linear blend along w, with w in [-1,1]
+        const double t = 0.5 * (w + 1.0);
+
+        Point<dim> x_phys;
+        x_phys[0] = lerp(xb, xt, t);
+        x_phys[1] = lerp(yb, yt, t);
+        x_phys[2] = lerp(zb_, zt_, t);
+
+        return x_phys;
     }
 
 

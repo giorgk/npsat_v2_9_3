@@ -40,6 +40,9 @@ namespace npsat_trace {
         const int my_rank,
         const unsigned int step_no,
         TrilinosWrappers::MPI::Vector &vface) { // must already be reinit(owned,relevant)
+
+        (void)relevant_now;
+
         const std::string filename = vface_rt0_filename(prefix, my_rank, step_no);
 
         std::ifstream in(filename, std::ios::binary);

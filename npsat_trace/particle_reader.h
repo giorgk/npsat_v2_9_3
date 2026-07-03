@@ -115,8 +115,7 @@ namespace  npsat_trace{
                 // For wells: never stop mid-well. If we hit the limit, we still emit the whole well.
                 WellRow w;
                 parse_well_line_strict(line, w);
-                const std::size_t n_emit = static_cast<std::size_t>(w.nlay) *
-                                     static_cast<std::size_t>(w.n_per_layer);
+                //const std::size_t n_emit = static_cast<std::size_t>(w.nlay) * static_cast<std::size_t>(w.n_per_layer);
 
                 // Even if out.size() >= max_particles, we still emit this well, then stop.
                 emit_well_particles(w, out);

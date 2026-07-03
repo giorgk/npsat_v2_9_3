@@ -49,6 +49,7 @@ private:
   void read_particle_well_flows_for_step(const std::string &prefix, unsigned int step);
   void read_water_table_for_step(const std::string &prefix, unsigned int step);
   npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(const typename DoFHandler<dim>::active_cell_iterator &cell);
+  npsat_trace::WellBoreTraceResults<dim> well_bore_flow_trace(const typename DoFHandler<dim>::active_cell_iterator &current_cell, const Point<dim> &x_in) const;
 
 
   MPI_Comm mpi_communicator;
@@ -280,7 +281,35 @@ void NPSAT_TRACE<dim>::run() {
 
             // --- WELL-BORE ROUTING (before velocity eval) ---
             {
+              const auto wb = this->well_bore_flow_trace(current_cell, x);
+              if (wb.terminate) {
+                // Keep wb.new_pos even if outside (per your rule) and terminate tracking
+                particle->set_location(wb.new_pos);
+                npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, -7 /* pumped_out */);
 
+
+                props[npsat_trace::pState] = -1.0;   // mark for deletion
+                dt_remaining = 0.0;
+                break;
+              }
+
+              // If the well moved the particle (position and/or cell), apply it and restart loop iteration
+              // so caches/velocity are computed in the correct cell at the new position.
+              if (wb.new_cell != current_cell || wb.new_pos != x) {
+                particle->set_location(wb.new_pos);
+                current_cell = wb.new_cell;
+
+                // If we jumped into a ghost cell, stop local tracing (migration will handle it)
+                if (!current_cell->is_locally_owned())
+                {
+                  if (dt_remaining < topt.sim_opt.dt_eps)
+                    props[npsat_trace::pState] = 2.0;
+                  break;
+                }
+                // Continue to next inner-iteration with updated cell/position.
+                // (Avoid using cached_cell from the old cell.)
+                continue;
+              }
             }
 
             Tensor<1,dim> u;
@@ -467,7 +496,7 @@ void NPSAT_TRACE<dim>::run() {
         // --------------------------------------------------------
         particle_handler.sort_particles_into_subdomains_and_cells();
 
-        AssertThrow(++exchange_iter < topt.sim_opt.n_max_proc_exchanges,
+        AssertThrow(++exchange_iter < static_cast<unsigned int>(topt.sim_opt.n_max_proc_exchanges),
             ExcMessage("Exceeded max exchange iterations in step " +
                        std::to_string(step) + "."));
 

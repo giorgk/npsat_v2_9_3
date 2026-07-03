@@ -12,7 +12,7 @@ namespace npsat_trace {
     class RT0FaceMap {
     public:
         using global_dof_index = types::global_dof_index;
-        static constexpr unsigned int faces_per_cell = GeometryInfo<dim>::faces_per_cell;
+        enum { faces_per_cell = GeometryInfo<dim>::faces_per_cell };
 
         using FaceGidArray      = std::array<global_dof_index, faces_per_cell>;
         using FaceSignArray     = std::array<std::int8_t,  faces_per_cell>;
