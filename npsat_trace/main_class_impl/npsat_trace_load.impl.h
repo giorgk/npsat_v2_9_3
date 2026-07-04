@@ -467,6 +467,7 @@ void NPSAT_TRACE<dim>::read_cell_well_map_binary_once() {
             npsat_trace::read_pod(in, L.wtop);
             npsat_trace::read_pod(in, L.wbot);
             npsat_trace::read_pod(in, L.q_row);
+            npsat_trace::read_pod(in, L.n_segments);
 
             npsat_trace::read_pod(in, L.ze);
             npsat_trace::read_pod(in, L.sl);

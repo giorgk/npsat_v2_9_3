@@ -133,6 +133,7 @@ namespace npsat_flow {
         double Kskin;
         std::vector<types::global_dof_index> trace_dof_indices;
         unsigned int global_index;
+        unsigned int n_segments;
     };
 
     // A POD packet of just the fields that are populated from file.
@@ -296,6 +297,7 @@ namespace npsat_flow {
                 w.Rskin = std::stod(*it++);
                 w.Kskin = std::stod(*it++);
                 w.global_index = i;
+                w.n_segments = 0;
 
                 wells.push_back(w);
                 rtree_values.emplace_back(Point2D(w.x, w.y), i);
@@ -413,6 +415,7 @@ namespace npsat_flow {
 
             // Fields not populated from file:
             w.trace_dof_indices.clear();
+            w.n_segments = 0;
 
             // Keep a consistent global index across ranks:
             w.global_index = static_cast<unsigned int>(p.global_index);

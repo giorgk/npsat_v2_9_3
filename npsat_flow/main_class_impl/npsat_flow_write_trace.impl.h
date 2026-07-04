@@ -194,6 +194,7 @@ void NPSAT_FLOW<dim>::export_cell_well_map_binary_once(const std::string &prefix
             const double wtop = W.top;
             const double wbot = W.bottom;
             const std::int32_t q_row = static_cast<std::int32_t>(W.q_row);
+            const std::uint32_t n_segments = static_cast<std::uint32_t>(W.n_segments);
 
             npsat_flow::write_pod(out, eid);
             npsat_flow::write_pod(out, wx);
@@ -201,6 +202,7 @@ void NPSAT_FLOW<dim>::export_cell_well_map_binary_once(const std::string &prefix
             npsat_flow::write_pod(out, wtop);
             npsat_flow::write_pod(out, wbot);
             npsat_flow::write_pod(out, q_row);
+            npsat_flow::write_pod(out, n_segments);
 
             // Your existing link geometry fields (stay; used by tracer)
             npsat_flow::write_pod(out, L.ze);

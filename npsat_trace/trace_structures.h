@@ -13,8 +13,15 @@ namespace npsat_trace {
         double porosity = 0.3;
         int N_time_steps = 5;
         double dt_eps = 0.01;
+        double direction = 1.0;
+        double stagnant_velocity_threshold = 1.0e-8;
+        double well_capture_distance = 10.0;
+        double well_capture_cell_fraction = 0.2;
+        double well_influence_q_scale = 1.0;
+        double well_influence_max_cell_fraction = 0.45;
         int n_max_proc_exchanges = 100;
         int n_max_streamline_steps = 10000;
+        int n_max_nonexpanding_steps = 50;
         int max_age = -1;
     };
 
@@ -43,6 +50,13 @@ namespace npsat_trace {
         pState = 6,    //TODO define states optional: 0 dormant, 1 active, 2 exited
         pStreamlineSteps = 7,
         pAge = 8,
+        pBBoxMinX = 9,
+        pBBoxMinY = 10,
+        pBBoxMinZ = 11,
+        pBBoxMaxX = 12,
+        pBBoxMaxY = 13,
+        pBBoxMaxZ = 14,
+        pNoExpandCount = 15,
     };
 
     static constexpr unsigned int n_particle_props = 9;
@@ -60,6 +74,9 @@ namespace npsat_trace {
         MAX_AGE             = 9,
         er_bottom           = 10,
         er_lateral          = 11,
+        er_well_captured    = 12,
+        er_well_mass_balance = 13,
+        er_nonexpanding     = 14,
     };
 
     struct CellWellLink{
@@ -73,6 +90,7 @@ namespace npsat_trace {
         double wtop       = 0.0;
         double wbot       = 0.0;
         std::int32_t q_row = 0;
+        std::int32_t n_segments = 0;
 
         // Link geometry fields used by tracer
         double ze      = 0.0;
@@ -123,9 +141,7 @@ namespace npsat_trace {
 
     struct WellFlowRecord
     {
-        // Must match the POD layout written by npsat_v2.
-        // We keep cell_id as uint64_t; if your writer uses uint32_t, it still reads safely
-        // only if it wrote uint64_t. If it wrote uint32_t, change this to uint32_t here.
+        // Must match the fields read from npsat_v2 particle-well-flow v1 records.
         std::uint32_t cell_id = 0;
         std::uint32_t well_global_index = 0;
         double ze = 0.0;        // if written
@@ -165,6 +181,7 @@ namespace npsat_trace {
     struct WellBoreTraceResults
     {
         bool terminate;
+        int end_reason;
         typename dealii::DoFHandler<dim>::active_cell_iterator new_cell;
         dealii::Point<dim> new_pos;
     };

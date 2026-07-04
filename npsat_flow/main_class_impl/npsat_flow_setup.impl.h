@@ -385,6 +385,7 @@ void NPSAT_FLOW<dim>::setup_well_index_sets_by_segments() {
     // ------------------------------------------------------------------
     std::vector<double> local_weight(n_wells, 0.0);
     std::vector<unsigned int> local_touched(n_wells, 0u);
+    std::vector<unsigned int> local_n_segments(n_wells, 0u);
     // Use screen length "sl" as segment weight:
     for (const auto &cell_entry : local_cell_well_map)
     {
@@ -397,7 +398,23 @@ void NPSAT_FLOW<dim>::setup_well_index_sets_by_segments() {
             //By count
             local_weight[w] += 1.0;
             local_touched[w] = 1u;
+            local_n_segments[w] += 1u;
         }
+    }
+
+    // Calculate the number of screen cell segments per well
+    {
+        std::vector<unsigned int> global_n_segments(n_wells, 0u);
+        const int ierr = MPI_Allreduce(local_n_segments.data(),
+                                       global_n_segments.data(),
+                                       static_cast<int>(n_wells),
+                                       MPI_UNSIGNED,
+                                       MPI_SUM,
+                                       mpi_communicator);
+        AssertThrow(ierr == MPI_SUCCESS, ExcMessage("MPI_Allreduce(n_segments) failed"));
+
+        for (unsigned int w = 0; w < n_wells; ++w)
+            mnwells.wells[w].n_segments = global_n_segments[w];
     }
 
     // ------------------------------------------------------------------

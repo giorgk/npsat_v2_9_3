@@ -5,6 +5,8 @@
 #ifndef NPSAT_V2_TRACE_INPUT_H
 #define NPSAT_V2_TRACE_INPUT_H
 
+#include <limits>
+
 #include <deal.II/base/mpi.h>
 #include <boost/program_options.hpp>
 
@@ -75,8 +77,15 @@ namespace npsat_trace {
         ("Simulation.Delta_time_file", po::value<std::string>(), "Filename with one delta-time value per row")
         ("Simulation.Porosity", po::value<double>()->default_value(0.3), "Effective porosity used by particle tracing")
         ("Simulation.DtEps", po::value<double>()->default_value(0.01), "Time-step completion tolerance")
+        ("Simulation.Direction", po::value<double>()->default_value(1.0), "Particle tracking direction: non-negative for forward, negative for backward")
+        ("Simulation.StagnantVelocityThreshold", po::value<double>()->default_value(1.0e-8), "Velocity magnitude below which a particle is stagnant for the current time step")
+        ("Simulation.WellCaptureDistance", po::value<double>()->default_value(10.0), "Near-well distance that always triggers a well-flow check")
+        ("Simulation.WellCaptureCellFraction", po::value<double>()->default_value(0.2), "Near-well check distance as a fraction of cell diameter")
+        ("Simulation.WellInfluenceQScale", po::value<double>()->default_value(1.0), "Well influence radius multiplier applied to sqrt(abs(Qe))")
+        ("Simulation.WellInfluenceMaxCellFraction", po::value<double>()->default_value(0.45), "Maximum well influence radius as a fraction of cell diameter")
         ("Simulation.MaxProcessorExchanges", po::value<int>()->default_value(100), "Maximum particle exchanges per time step")
         ("Simulation.MaxStreamlineSteps", po::value<int>()->default_value(10000), "Maximum integration steps per particle streamline")
+        ("Simulation.MaxNonExpandingSteps", po::value<int>()->default_value(50), "Terminate particles after this many non-expanding trajectory steps")
         ("Simulation.MaxAge", po::value<int>()->default_value(std::numeric_limits<int>::max()), "Maximum total particle travel time")
 
         //[Output]
@@ -122,8 +131,15 @@ namespace npsat_trace {
                     tr_opt.delta_time_file = vm_cfg["Simulation.Delta_time_file"].as<std::string>();
                     tr_opt.sim_opt.porosity = vm_cfg["Simulation.Porosity"].as<double>();
                     tr_opt.sim_opt.dt_eps = vm_cfg["Simulation.DtEps"].as<double>();
+                    tr_opt.sim_opt.direction = (vm_cfg["Simulation.Direction"].as<double>() < 0.0) ? -1.0 : 1.0;
+                    tr_opt.sim_opt.stagnant_velocity_threshold = std::max(0.0, vm_cfg["Simulation.StagnantVelocityThreshold"].as<double>());
+                    tr_opt.sim_opt.well_capture_distance = vm_cfg["Simulation.WellCaptureDistance"].as<double>();
+                    tr_opt.sim_opt.well_capture_cell_fraction = vm_cfg["Simulation.WellCaptureCellFraction"].as<double>();
+                    tr_opt.sim_opt.well_influence_q_scale = vm_cfg["Simulation.WellInfluenceQScale"].as<double>();
+                    tr_opt.sim_opt.well_influence_max_cell_fraction = vm_cfg["Simulation.WellInfluenceMaxCellFraction"].as<double>();
                     tr_opt.sim_opt.n_max_proc_exchanges = vm_cfg["Simulation.MaxProcessorExchanges"].as<int>();
                     tr_opt.sim_opt.n_max_streamline_steps = vm_cfg["Simulation.MaxStreamlineSteps"].as<int>();
+                    tr_opt.sim_opt.n_max_nonexpanding_steps = vm_cfg["Simulation.MaxNonExpandingSteps"].as<int>();
                     tr_opt.sim_opt.max_age = vm_cfg["Simulation.MaxAge"].as<int>();
                 }
 

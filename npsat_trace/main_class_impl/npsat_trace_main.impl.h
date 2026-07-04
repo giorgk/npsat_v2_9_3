@@ -34,6 +34,13 @@ void NPSAT_TRACE<dim>::distribute_particles(const std::vector<npsat_trace::Parti
             pr[npsat_trace::pState] = 0.0;
             pr[npsat_trace::pStreamlineSteps] = 0.0;
             pr[npsat_trace::pAge] = 0.0;
+            pr[npsat_trace::pBBoxMinX] = npsat_trace::coarse_streamline_coord(s.x);
+            pr[npsat_trace::pBBoxMinY] = npsat_trace::coarse_streamline_coord(s.y);
+            pr[npsat_trace::pBBoxMinZ] = npsat_trace::coarse_streamline_coord(s.z);
+            pr[npsat_trace::pBBoxMaxX] = pr[npsat_trace::pBBoxMinX];
+            pr[npsat_trace::pBBoxMaxY] = pr[npsat_trace::pBBoxMinY];
+            pr[npsat_trace::pBBoxMaxZ] = pr[npsat_trace::pBBoxMinZ];
+            pr[npsat_trace::pNoExpandCount] = 0.0;
             //pr[npsat_trace::pRf]  = double(s.rf);
             properties.push_back(std::move(pr));
         }
@@ -125,10 +132,9 @@ void NPSAT_TRACE<dim>::read_particle_well_flows_for_step(const std::string &pref
     for (std::uint64_t i = 0; i < nrec; ++i) {
         npsat_trace::WellFlowRecord r;
 
-        // IMPORTANT: This assumes m.cell_id was written as uint64_t in npsat_v2.
-        // If the writer uses uint32_t, then:
-        //   - change WellFlowRecord::cell_id to uint32_t
-        //   - change FlowKey::cell_id accordingly
+        // Matches npsat_v2 particle-well-flow v1 records:
+        // uint32 cell_id, uint32 well_global_index, double Qe, double Qwbf_bot,
+        // double Qwbf_top.
         npsat_trace::read_pod(in, r.cell_id);
 
         std::uint32_t wgid = 0;
@@ -138,6 +144,10 @@ void NPSAT_TRACE<dim>::read_particle_well_flows_for_step(const std::string &pref
         npsat_trace::read_pod(in, r.Qe);
         npsat_trace::read_pod(in, r.Qwbf_bot);
         npsat_trace::read_pod(in, r.Qwbf_top);
+
+        r.Qe       *= topt.sim_opt.direction;
+        r.Qwbf_bot *= topt.sim_opt.direction;
+        r.Qwbf_top *= topt.sim_opt.direction;
 
         const npsat_trace::FlowKey key{r.cell_id, r.well_global_index};
         flows_by_cell_well.emplace(key, r);
@@ -229,185 +239,415 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
         const Point<dim> &x_in) const {
     static_assert(dim == 3, "apply_well_kick_if_close currently assumes dim==3.");
 
+    // Default result: no well interaction.
+    // The caller interprets terminate=false and unchanged position/cell as
+    // "continue with normal aquifer velocity tracing".
     npsat_trace::WellBoreTraceResults<dim> R;
     R.new_pos = x_in;
     R.new_cell = current_cell;
     R.terminate = false;
+    // If a later branch terminates without setting a more specific reason,
+    // it is a normal well capture at the top/bottom of the screened interval.
+    R.end_reason = npsat_trace::er_well_captured;
 
-    const std::string cell_id_str = current_cell->id().to_string();
-    const auto it_slot = cellid_to_slot.find(cell_id_str);
-    if (it_slot == cellid_to_slot.end())
-        return R;
+    // Small tolerance used to classify flows as positive, negative, or zero.
+    // The well flow files have already been multiplied by trace direction when
+    // they were loaded, so the signs here are always in the active tracking
+    // direction, regardless of forward/backward mode.
+    const double flow_eps = 1.0e-12;
 
-    const unsigned int slot = it_slot->second;
-    if (slot >= slot_cell_well_links.size())
-        return R;
+    // Sentinel used by find_link_and_flow(): any well is allowed on the first
+    // capture test, but after capture we must keep routing along the same well.
+    const std::uint32_t any_well = std::numeric_limits<std::uint32_t>::max();
 
-    const auto &links = slot_cell_well_links[slot];
-    if (links.empty())
-        return R;
-
-    const double cell_diam = 0.45* current_cell->diameter();
-
-    // Compute average vertical edge length: pairs (0-4), (1-5), (2-6), (3-7)
-    double mean_h = 0.0;
-    constexpr unsigned int n_pairs = 4;
-    for (unsigned int i = 0; i < n_pairs; ++i)
-    {
-        const Point<dim> &pb = current_cell->vertex(i);       // bottom vertex
-        const Point<dim> &pt = current_cell->vertex(i + 4);   // corresponding top vertex
-
-        mean_h += pb.distance(pt);
-    }
-
-    mean_h /= static_cast<double>(n_pairs);
-    // 1% vertical nudge
-    const double dz_nudge = 0.01 * mean_h;
-
-    // ---- Find closest well within an influence radius (scaled by |Qe|) ----
-    // Flow lookup key: assumes your flow files use cell_id == active_cell_index().
-    // If not, replace with the exact id you wrote in npsat_v2.
-    const std::uint64_t cell_id_u64 = static_cast<std::uint64_t>(current_cell->active_cell_index());
-
-    const npsat_trace::CellWellLink *bestL = nullptr;
-    npsat_trace::WellFlowRecord bestF{};
-    double best_dist = std::numeric_limits<double>::infinity();
-    //double best_rinf = 0.0;
-
-    for (const auto &L : links) {
-        // Vertical gate FIRST: if particle is above wtop or below wbot => no effect at all.
-        if (x_in[2] > L.wtop || x_in[2] < L.wbot)
-            continue;
-
-        const npsat_trace::FlowKey key{cell_id_u64, static_cast<std::uint32_t>(L.well_global_index)};
-        const auto itF = flows_by_cell_well.find(key);
-        if (itF == flows_by_cell_well.end())
-            continue; // no flow data for this cell-well link in this step
-
-        const auto &F = itF->second;
-
-        // If Qe > 0: per your simplification, ignore well entirely (normal field tracing)
-        if (F.Qe > 0.0)
-            continue;
-
-        const double rx = x_in[0] - L.wx;
-        const double ry = x_in[1] - L.wy;
-        const double d  = std::sqrt(rx*rx + ry*ry);
-
-        // Influence radius: grows with |Qe|, but NEVER exceeds cell diameter.
-        const double Qe_abs = std::abs(F.Qe);
-
-        // Tunables (members):
-        //   well_influence_r0: base radius [L]
-        //   well_influence_k : scale [L / sqrt(Q)]
-        double well_influence_r0   = 50.0;   // base influence radius (m)
-        double well_influence_k    = 0.0;
-        double r_inf = std::max(0.0, well_influence_r0 + well_influence_k * std::sqrt(Qe_abs));
-        r_inf = std::min(r_inf, cell_diam);
-
-        if (d <= r_inf && d < best_dist) {
-            bestL = &L;
-            bestF = F;
-            best_dist = d;
-            //best_rinf = r_inf;
-        }
-    }
-
-    if (!bestL)
-        return R;
-
-    // At this point: particle is "captured" by the well (within lateral influence AND within [wbot,wtop])
-
-    // ---- Move within well ONLY (Qe <= 0 guaranteed here) ----
-    // If Qe < 0 the well is receiving water from aquifer: particle can only move within the well.
-    // Rule: Qwbf_top > 0 => upward movement; else downward (if there is drive).
-    //
-    // NOTE: This implements a discrete jump to adjacent cell in z, as you requested earlier.
-    // If you prefer a continuous z-step inside the same cell, replace move_to_neighbor with z-update.
-
-    const double Qwbf_top = bestF.Qwbf_top;
-    const double Qwbf_bot = bestF.Qwbf_bot;
-
-    const bool go_up = (Qwbf_top > 0.0);
-    const bool go_down = (!go_up) && (Qwbf_bot < 0.0); // conservative: requires some downward "drive"
-
+    // Return the neighbor across a vertical face that contains the nudged
+    // particle position.  This hides the same-level/refined-neighbor distinction
+    // from the well-routing loop below.
     auto neighbor_that_contains_point =
+       [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
+           const unsigned int face,
+           const Point<dim> &pt) -> typename DoFHandler<dim>::active_cell_iterator {
+
+           // Precondition: !cell->at_boundary(face). Boundary cases are handled
+           // before calling this lambda because reaching a screen end captures
+           // the particle.
+           auto neigh = cell->neighbor(face);
+           if (!neigh->has_children()) {
+               // Same-level neighbor: should contain the point (up to tolerance), but still check.
+               if (neigh->point_inside(pt))
+                   return neigh;
+
+               // Fallback: return neighbor anyway (keeps things moving; caller can still use pt).
+               return neigh;
+           }
+           // Refined neighbor: choose the active child that contains the point.
+           for (unsigned int c = 0; c < neigh->n_children(); ++c) {
+               auto ch = neigh->child(c);
+               if (ch->is_active() && ch->point_inside(pt))
+                   return ch;
+           }
+           // If none matched (rare due to tolerance), return the neighbor as fallback.
+           // If you have a tolerance-based "point_inside" helper, use it here.
+           return neigh;
+    };
+
+    // Convert a scalar flow into a routing sign:
+    // +1 means upward wellbore movement, -1 means downward movement, and 0
+    // means there is no reliable axial drive.
+    auto flow_sign = [flow_eps](const double q) -> int {
+        if (q > flow_eps)
+            return 1;
+        if (q < -flow_eps)
+            return -1;
+        return 0;
+    };
+
+    // Map a deal.II cell iterator into the compact per-rank "slot" used by
+    // slot_cell_well_links.  The slot map was built from persistent CellId
+    // strings when the trace-side mesh/mapping was loaded.
+    auto cell_slot = [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
+                         unsigned int &slot) -> bool {
+        const auto it_slot = cellid_to_slot.find(cell->id().to_string());
+        if (it_slot == cellid_to_slot.end())
+            return false;
+        slot = it_slot->second;
+        return slot < slot_cell_well_links.size();
+    };
+
+    // Select the well link and adjusted flow record that should control routing
+    // in a cell.
+    //
+    // Two modes are used:
+    // 1. require_threshold=true: initial capture decision from the aquifer.
+    //    First, a small "definite check" radius is applied to all wells,
+    //    regardless of Qe.  If the nearest definite well is attracting
+    //    (Qe < 0 after direction adjustment), the particle is captured by it.
+    //    If no definite well captures the particle, the wider Qe-based
+    //    influence radius is evaluated for all attracting wells.  When several
+    //    wells can capture, the selected well maximizes abs(Qe)/distance^2.
+    //
+    // 2. require_threshold=false with required_well set: continued in-well
+    //    routing.  The particle has already been captured by one well, so no
+    //    lateral threshold is applied.  We only ask whether the same well in
+    //    the current cell still has Qe pulling into the well.  If Qe points
+    //    out to the aquifer, routing stops and normal aquifer tracing resumes.
+    auto find_link_and_flow =
         [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
-            const unsigned int face,
-            const Point<dim> &pt) -> typename DoFHandler<dim>::active_cell_iterator
-    {
-        // Precondition: !cell->at_boundary(face)
-        auto neigh = cell->neighbor(face);
-        if (!neigh->has_children()) {
-            // Same-level neighbor: should contain the point (up to tolerance), but still check.
-            if (neigh->point_inside(pt))
-                return neigh;
+            const Point<dim> &x,
+            const std::uint32_t required_well,
+            const bool require_threshold,
+            const npsat_trace::CellWellLink *&bestL,
+            npsat_trace::WellFlowRecord &bestF) -> bool {
 
-            // Fallback: return neighbor anyway (keeps things moving; caller can still use pt).
-            return neigh;
-        }
-        // Refined neighbor: choose the active child that contains the point.
-        for (unsigned int c = 0; c < neigh->n_children(); ++c) {
-            auto ch = neigh->child(c);
-            if (ch->is_active() && ch->point_inside(pt))
-                return ch;
-        }
-        // If none matched (rare due to tolerance), return the neighbor as fallback.
-        // If you have a tolerance-based "point_inside" helper, use it here.
-        return neigh;
+            unsigned int slot = 0;
+            if (!cell_slot(cell, slot))
+                return false;
+
+            const auto &links = slot_cell_well_links[slot];
+            if (links.empty())
+                return false;
+
+            const std::uint64_t cell_id_u64 = static_cast<std::uint64_t>(cell->active_cell_index());
+            const npsat_trace::CellWellLink *candidateL = nullptr;
+            npsat_trace::WellFlowRecord candidateF{};
+            double best_dist = std::numeric_limits<double>::infinity();
+            double best_weight = -1.0;
+            const double cell_diameter = cell->diameter();
+            const double definite_distance = std::min(
+                std::max(0.0, topt.sim_opt.well_capture_distance),
+                std::max(0.0, topt.sim_opt.well_capture_cell_fraction) * cell_diameter);
+            const double influence_cap = std::max(0.0, topt.sim_opt.well_influence_max_cell_fraction) * cell_diameter;
+            const double q_scale = std::max(0.0, topt.sim_opt.well_influence_q_scale);
+
+            for (const auto &L : links) {
+                // During continued in-well routing we only follow the well that
+                // captured the particle.  During initial capture any well link
+                // in this cell may be considered.
+                if (required_well != any_well && L.well_global_index != required_well)
+                    continue;
+
+                // The well link only applies inside the full screened interval
+                // stored in the cell-well map.  Outside it, this well has no
+                // routing effect in this cell.
+                if (x[2] > L.wtop || x[2] < L.wbot)
+                    continue;
+
+                // The transient flow record is keyed by the active cell index
+                // and the internal well index.  The stored Q values have already
+                // been sign-corrected for forward/backward tracking.
+                const npsat_trace::FlowKey key{cell_id_u64, static_cast<std::uint32_t>(L.well_global_index)};
+                const auto itF = flows_by_cell_well.find(key);
+                if (itF == flows_by_cell_well.end())
+                    continue;
+
+                const auto &F = itF->second;
+
+                const double rx = x[0] - L.wx;
+                const double ry = x[1] - L.wy;
+                const double d  = std::sqrt(rx*rx + ry*ry);
+
+                // Continuation mode: no influence radius is used.  A captured
+                // particle keeps moving vertically through this same well while
+                // Qe continues to pull from aquifer into the well.  If Qe is
+                // zero or points from well to aquifer, the particle exits
+                // wellbore routing in this cell.
+                if (required_well != any_well && !require_threshold) {
+                    if (F.Qe >= -flow_eps)
+                        return false;
+                    bestL = &L;
+                    bestF = F;
+                    return true;
+                }
+
+                // Initial capture, phase 1: definite near-well check.  This
+                // radius is min(user distance, user fraction * cell diameter).
+                // It is intentionally independent of Qe and of other wells.
+                if (require_threshold) {
+                    if (d <= definite_distance && d < best_dist) {
+                        candidateL = &L;
+                        candidateF = F;
+                        best_dist = d;
+                        best_weight = std::numeric_limits<double>::infinity();
+                    }
+                    continue;
+                }
+
+                // This branch is not used by the current caller, but keeps the
+                // helper well-defined if later used to find the nearest
+                // attracting well without applying thresholds.
+                if (F.Qe >= -flow_eps)
+                    continue;
+
+                if (d < best_dist) {
+                    candidateL = &L;
+                    candidateF = F;
+                    best_dist = d;
+                }
+            }
+
+            if (require_threshold) {
+                // If a well was inside the definite radius, it gets priority.
+                // It still captures only if its adjusted Qe is into the well.
+                if (candidateL) {
+                    if (candidateF.Qe >= -flow_eps)
+                        return false;
+                    bestL = candidateL;
+                    bestF = candidateF;
+                    return true;
+                }
+
+                // Initial capture, phase 2: no well was close enough for the
+                // definite check, so evaluate Qe-based influence distances for
+                // all attracting wells in this cell.  Each influence radius is
+                // capped by a user fraction of cell->diameter().
+                for (const auto &L : links) {
+                    if (x[2] > L.wtop || x[2] < L.wbot)
+                        continue;
+
+                    const npsat_trace::FlowKey key{cell_id_u64, static_cast<std::uint32_t>(L.well_global_index)};
+                    const auto itF = flows_by_cell_well.find(key);
+                    if (itF == flows_by_cell_well.end())
+                        continue;
+
+                    const auto &F = itF->second;
+                    if (F.Qe >= -flow_eps)
+                        continue;
+
+                    const double rx = x[0] - L.wx;
+                    const double ry = x[1] - L.wy;
+                    const double d = std::sqrt(rx*rx + ry*ry);
+                    const double r_inf = std::min(q_scale * std::sqrt(std::abs(F.Qe)), influence_cap);
+                    if (r_inf <= flow_eps)
+                        continue;
+                    if (d > r_inf)
+                        continue;
+
+                    // If several wells overlap, select the strongest pull by
+                    // an inverse-square weighting.  flow_eps prevents division
+                    // by zero when a particle is exactly on the well axis.
+                    const double d_eff = std::max(d, flow_eps);
+                    const double weight = std::abs(F.Qe) / (d_eff * d_eff);
+                    if (weight > best_weight) {
+                        best_weight = weight;
+                        candidateL = &L;
+                        candidateF = F;
+                    }
+                }
+                // A candidate survived the Qe influence test and won the
+                // inverse-square competition.
+                if (candidateL) {
+                    bestL = candidateL;
+                    bestF = candidateF;
+                    return true;
+                }
+            }
+            return false;
     };
-    auto move_to_neighbor = [&](bool to_top) -> void {
-        const unsigned int face = to_top ? 5u : 4u; // z+ : z-
 
-        // Snap particle laterally onto well axis when in-well.
-        Point<dim> pt = x_in;
-        pt[0] = bestL->wx;
-        pt[1] = bestL->wy;
+    // Decide whether a captured particle should move to the segment above or
+    // below.  Qwbf_bot and Qwbf_top are vertical wellbore flows at the bottom
+    // and top of the current segment after direction correction.
+    auto axial_direction = [&](const npsat_trace::CellWellLink &L,
+                               const npsat_trace::WellFlowRecord &F,
+                               const Point<dim> &x,
+                               int &end_reason) -> int {
 
-        // Nudge across the face by 1% of cell height.
-        pt[2] = x_in[2] + (to_top ? +dz_nudge : -dz_nudge);
+        const int bot_s = flow_sign(F.Qwbf_bot);
+        const int top_s = flow_sign(F.Qwbf_top);
 
-        // If at boundary: keep position even if outside, and terminate.
-        if (current_cell->at_boundary(face))
-        {
-            R.new_pos = pt;
-            R.new_cell = current_cell;
-            R.terminate = true;
-            return;
+        // Same nonzero sign at both ends means the whole segment is routed in
+        // one axial direction.  A zero at one end inherits the nonzero end.
+        if (bot_s != 0 && bot_s == top_s)
+            return bot_s;
+        if (bot_s != 0 && top_s == 0)
+            return bot_s;
+        if (bot_s == 0 && top_s != 0)
+            return top_s;
+
+        // Bottom upward and top downward means both axial flows point toward
+        // this segment while Qe is also pulling into the well.  That is a local
+        // mass-balance inconsistency for routing, so terminate with a diagnostic
+        // flag instead of making an arbitrary move.
+        if (bot_s > 0 && top_s < 0) {
+            end_reason = npsat_trace::er_well_mass_balance;
+            return 0;
         }
 
-        // Otherwise: pick neighbor / child that contains the nudged point.
-        auto chosen = neighbor_that_contains_point(current_cell, face, pt);
-        R.new_pos  = pt;
-        R.new_cell = chosen;
+        // Bottom downward and top upward means axial flows leave the segment on
+        // both ends.  Use a linear interpolation at the particle's z to choose
+        // which side of the internal divide the particle belongs to.
+        if (bot_s < 0 && top_s > 0) {
+            const double seg_bot = L.w_zbot;
+            const double seg_top = L.w_zbot + L.sl;
+            const double denom = seg_top - seg_bot;
+            const double alpha = (std::abs(denom) > 0.0)
+                ? npsat_trace::clamp_((x[2] - seg_bot) / denom, 0.0, 1.0)
+                : 0.5;
+            const double q_interp = F.Qwbf_bot + alpha * (F.Qwbf_top - F.Qwbf_bot);
+            return flow_sign(q_interp);
+        }
 
-        // Pumped out logic (as you specified): only after capture + intra-well motion reaches wtop.
-        // Since we only do intra-well moves here, we can terminate if we crossed wtop.
-        if (R.new_pos[2] >= bestL->wtop)
-            R.terminate = true;
+        return 0;
     };
 
-    if (go_up){
-        move_to_neighbor(true);
+    // Initial capture attempt from the current aquifer cell.  If no well can
+    // capture the particle, return the default result and the caller will
+    // continue normal velocity-based tracing.
+    const npsat_trace::CellWellLink *L = nullptr;
+    npsat_trace::WellFlowRecord F{};
+    if (!find_link_and_flow(current_cell, x_in, any_well, true, L, F))
         return R;
+
+    // Once captured, follow the same well vertically through adjacent cells.
+    // This routing is instantaneous: x/y are preserved and no particle time or
+    // age is advanced in this function.  Only z and cell ownership may change.
+    typename DoFHandler<dim>::active_cell_iterator cell = current_cell;
+    Point<dim> x = x_in;
+    std::uint32_t well_id = L->well_global_index;
+
+    // Guard against accidental infinite loops if mesh/well data are malformed.
+    // This is the global number of intersected cells for the captured well,
+    // plus one final hop for exiting to aquifer/ghost/end.
+    std::size_t max_hops_size = static_cast<std::size_t>(L->n_segments) + 1;
+    if (max_hops_size < 1)
+        max_hops_size = 1;
+    const unsigned int max_hops = static_cast<unsigned int>(max_hops_size);
+
+    for (unsigned int hop = 0; hop < max_hops; ++hop) {
+        // If routing has entered a ghost/foreign cell, stop here.  The caller
+        // will break local tracing and ParticleHandler migration will transfer
+        // the particle to the owning processor.
+        if (!cell->is_locally_owned()) {
+            R.new_pos = x;
+            R.new_cell = cell;
+            return R;
+        }
+
+        // In the current cell, continue only if this same well still pulls the
+        // particle from aquifer into well (Qe < 0).  If Qe points toward the
+        // aquifer, the particle leaves well routing and resumes normal tracing.
+        if (!find_link_and_flow(cell, x, well_id, false, L, F)) {
+            R.new_pos = x;
+            R.new_cell = cell;
+            return R;
+        }
+
+        // Determine the next vertical direction inside the captured well
+        // segment, or identify a mass-balance/capture stop condition.
+        int end_reason = npsat_trace::er_well_captured;
+        const int move_sign = axial_direction(*L, F, x, end_reason);
+
+        // Routing inconsistency: terminate and report the mass-balance flag.
+        if (end_reason == npsat_trace::er_well_mass_balance) {
+            R.new_pos = x;
+            R.new_cell = cell;
+            R.terminate = true;
+            R.end_reason = end_reason;
+            return R;
+        }
+
+        // No usable axial drive: keep the particle at its current x/y/z and
+        // classify it as captured by the well.
+        if (move_sign == 0) {
+            R.new_pos = x;
+            R.new_cell = cell;
+            R.terminate = true;
+            R.end_reason = npsat_trace::er_well_captured;
+            return R;
+        }
+
+        const bool to_top = move_sign > 0;
+        const unsigned int face = to_top ? 5u : 4u;
+
+        // Use the average vertical edge length to nudge the routed particle
+        // just across the top/bottom face.  This helps deal.II place it in the
+        // neighboring cell rather than leaving it exactly on a shared face.
+        double mean_h = 0.0;
+        const unsigned int n_pairs = 4;
+        for (unsigned int i = 0; i < n_pairs; ++i) {
+            const Point<dim> &pb = cell->vertex(i);
+            const Point<dim> &pt = cell->vertex(i + 4);
+            mean_h += pb.distance(pt);
+        }
+        mean_h /= static_cast<double>(n_pairs);
+        const double dz_nudge = 0.01 * mean_h;
+
+        const double seg_bot = L->w_zbot;
+        const double seg_top = L->w_zbot + L->sl;
+
+        // If the next vertical move exits the global screened interval, the
+        // particle has reached the end of the well and is captured.
+        const bool at_screen_end = to_top
+            ? (seg_top >= L->wtop - dz_nudge)
+            : (seg_bot <= L->wbot + dz_nudge);
+
+        // Vertical-only move: preserve x/y exactly.  This is intentional; the
+        // capture logic used well distance to decide routing, but the routed
+        // particle is not snapped laterally to the well axis.
+        x[2] = to_top ? (seg_top + dz_nudge) : (seg_bot - dz_nudge);
+
+        // Boundary or screen end means the route cannot continue to another
+        // screened cell, so terminate as well captured.
+        if (at_screen_end || cell->at_boundary(face)) {
+            R.new_pos = x;
+            R.new_cell = cell;
+            R.terminate = true;
+            R.end_reason = npsat_trace::er_well_captured;
+            return R;
+        }
+
+        // Move to the active neighbor containing the nudged point and continue
+        // the instantaneous well route in that cell.
+        cell = neighbor_that_contains_point(cell, face, x);
     }
 
-    if (go_down){
-        move_to_neighbor(false);
-        return R;
-    }
-
-    // No axial drive: keep captured but (optionally) snap to well axis; do not move cells.
-    // Keep z unchanged (still within [wbot,wtop] by construction here).
-    R.new_pos[0] = bestL->wx;
-    R.new_pos[1] = bestL->wy;
-    R.new_pos[2] = x_in[2];
-    R.new_cell   = current_cell;
+    // Exceeding max_hops indicates inconsistent cell-well connectivity or a
+    // cycle in the route.  Treat it as a mass-balance/routing diagnostic.
+    R.new_pos = x;
+    R.new_cell = cell;
+    R.terminate = true;
+    R.end_reason = npsat_trace::er_well_mass_balance;
     return R;
-
-
-
-
 }
 
 #endif //NPSAT_TRACE_MAIN_IMPL_H

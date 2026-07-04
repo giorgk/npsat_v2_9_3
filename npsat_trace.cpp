@@ -159,7 +159,7 @@ void NPSAT_TRACE<dim>::run() {
     // ---------------------------
     // (B) LOOP OVER TIME STEPS
     // ---------------------------
-    unsigned int step = 0;
+    unsigned int step = (topt.sim_opt.direction >= 0.0) ? 0u : (N_time_steps - 1u);
     while (true) {
       load_data_step(topt.input_prefix, step);
       // read the size of this timestep
@@ -242,7 +242,6 @@ void NPSAT_TRACE<dim>::run() {
           // Inner tracing loop
           // -----------------------------
           // This particle still has to walk this step
-          ++not_done_local;
 
           const double Eid = props[npsat_trace::pEid];
           const double Sid = props[npsat_trace::pSid];
@@ -250,6 +249,8 @@ void NPSAT_TRACE<dim>::run() {
 
           double &streamline_steps = props[npsat_trace::pStreamlineSteps];
           double &particle_age = props[npsat_trace::pAge];
+          const int max_nonexpanding_steps = topt.sim_opt.n_max_nonexpanding_steps;
+          const double stagnant_velocity_threshold = topt.sim_opt.stagnant_velocity_threshold;
 
           Point<dim> x_ref; // reference point
           double vmag = 0.0;
@@ -285,7 +286,7 @@ void NPSAT_TRACE<dim>::run() {
               if (wb.terminate) {
                 // Keep wb.new_pos even if outside (per your rule) and terminate tracking
                 particle->set_location(wb.new_pos);
-                npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, -7 /* pumped_out */);
+                npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, wb.end_reason);
 
 
                 props[npsat_trace::pState] = -1.0;   // mark for deletion
@@ -300,8 +301,7 @@ void NPSAT_TRACE<dim>::run() {
                 current_cell = wb.new_cell;
 
                 // If we jumped into a ghost cell, stop local tracing (migration will handle it)
-                if (!current_cell->is_locally_owned())
-                {
+                if (!current_cell->is_locally_owned()){
                   if (dt_remaining < topt.sim_opt.dt_eps)
                     props[npsat_trace::pState] = 2.0;
                   break;
@@ -332,13 +332,20 @@ void NPSAT_TRACE<dim>::run() {
             // Write current location ONLY if velocity is computed
             npsat_trace::write_sample(sl_out, props[npsat_trace::pPid], Eid, Sid, x, vmag);
 
-            // TODO handle vmag<=0 or stuck logic properly; for now avoid division by zero
-            // It may be zero for a given step but nonzero in another step, therefore this logic needs update
-            // If the velocity is zero in this time step at this location then this particle shold be treated
-            // as if finished this step
-            if (vmag <= 0.0) {
-              npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_zero_velocity);
-              props[npsat_trace::pState] = -1.0;
+            // A particle can sit in a stagnant/near-stagnant cell for one
+            // transient step and move again later when the flow field changes.
+            // Treat this as completed for the current time step; the
+            // non-expanding trajectory guard below handles persistent stagnation.
+            if (vmag <= stagnant_velocity_threshold) {
+              npsat_trace::increment_streamline_nonexpansion(props);
+              if (max_nonexpanding_steps > 0 && props[npsat_trace::pNoExpandCount] >= static_cast<double>(max_nonexpanding_steps))
+              {
+                npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_nonexpanding);
+                props[npsat_trace::pState] = -1.0;
+              }
+              else
+                props[npsat_trace::pState] = 2.0;
+              particle_age += dt_remaining;
               dt_remaining = 0.0;
               break;
             }
@@ -351,21 +358,30 @@ void NPSAT_TRACE<dim>::run() {
                                                         vmag, dt_remaining, time_step_size, tsc,is_stuck);
 
             if (is_stuck) {
-              npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_stuck);
-              props[npsat_trace::pState] = -1.0;
+              npsat_trace::increment_streamline_nonexpansion(props);
+              if (max_nonexpanding_steps > 0 &&
+                  props[npsat_trace::pNoExpandCount] >= static_cast<double>(max_nonexpanding_steps))
+              {
+                npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_nonexpanding);
+                props[npsat_trace::pState] = -1.0;
+              }
+              else
+                props[npsat_trace::pState] = 2.0;
+              particle_age += dt_remaining;
               dt_remaining = 0.0;
               break;
             }
 
             // move the particle
             const Tensor<1,dim> dir = u / vmag;
-            const Point<dim> x_proposed = x + ds * dir;
+            const Point<dim> x_proposed = x + ds * dir * topt.sim_opt.direction;
             const double dt_move = ds / vmag;
 
-            if (particle_age + dt_move > topt.sim_opt.max_age) {
+            if (topt.sim_opt.max_age >= 0.0 && particle_age + dt_move > topt.sim_opt.max_age) {
               const double alpha_age = npsat_trace::clamp_((topt.sim_opt.max_age - particle_age) / dt_move, 0.0, 1.0);
               const Point<dim> x_age = x + alpha_age * (x_proposed - x);
               particle->set_location(x_age);
+              npsat_trace::update_streamline_bbox<dim>(props, x_age);
               particle_age = topt.sim_opt.max_age;
               npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::MAX_AGE);
               props[npsat_trace::pState] = -1.0;
@@ -389,6 +405,7 @@ void NPSAT_TRACE<dim>::run() {
 
                     const Point<dim> x_wt = x + alpha * (x_proposed - x);
                     particle->set_location(x_wt);
+                    npsat_trace::update_streamline_bbox<dim>(props, x_wt);
                     particle_age += alpha * dt_move;
                     npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_water_table);
                     props[npsat_trace::pState] = -1.0;
@@ -401,6 +418,7 @@ void NPSAT_TRACE<dim>::run() {
 
             // Set the new location for the particle
             particle->set_location(x_proposed);
+            npsat_trace::update_streamline_bbox<dim>(props, x_proposed);
             // In the last step for this time step this should be configured so as to return dt_move ~0
             dt_remaining -= dt_move;
             particle_age += dt_move;
@@ -457,6 +475,14 @@ void NPSAT_TRACE<dim>::run() {
               break;
             }
 
+            if (max_nonexpanding_steps > 0 && props[npsat_trace::pNoExpandCount] >= static_cast<double>(max_nonexpanding_steps))
+            {
+              npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_nonexpanding);
+              props[npsat_trace::pState] = -1.0;
+              dt_remaining = 0.0;
+              break;
+            }
+
             if (dt_remaining < topt.sim_opt.dt_eps)
             {
               //since this is days, a step of less than a day is too much should be treated as zero
@@ -464,6 +490,9 @@ void NPSAT_TRACE<dim>::run() {
               break;
             }
           }// while loop tracing a particle within a time step
+          if (props[npsat_trace::pState] == 1.0 &&
+              props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps)
+            ++not_done_local;
           ++particle;
         }// While loop iterating particles
 
@@ -510,8 +539,11 @@ void NPSAT_TRACE<dim>::run() {
       if (n_global == 0) {
         break;
       }
-      // Advance time step cyclically (your requirement)
-      step = (step + 1) % N_time_steps;
+      // Advance time step cyclically.
+      if (topt.sim_opt.direction >= 0.0)
+        step = (step + 1) % N_time_steps;
+      else
+        step = (step + N_time_steps - 1) % N_time_steps;
     }// while loop over time steps
     iter++;
   } // End of main while loop

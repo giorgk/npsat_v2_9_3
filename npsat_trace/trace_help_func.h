@@ -5,6 +5,7 @@
 #ifndef TRACE_HELP_FUNC_H
 #define TRACE_HELP_FUNC_H
 
+#include <cmath>
 #include <istream>
 #include <stdexcept>
 
@@ -46,6 +47,36 @@ namespace npsat_trace {
         }
 
         return s;
+    }
+
+    inline double coarse_streamline_coord(const double x)
+    {
+        return std::round(10.0 * x);
+    }
+
+    template <int dim, class Properties>
+    inline bool update_streamline_bbox(Properties props, const Point<dim> &x)
+    {
+        bool expanded = false;
+        const double qx = coarse_streamline_coord(x[0]);
+        const double qy = coarse_streamline_coord(x[1]);
+        const double qz = coarse_streamline_coord(x[2]);
+
+        if (qx < props[pBBoxMinX]) { props[pBBoxMinX] = qx; expanded = true; }
+        if (qy < props[pBBoxMinY]) { props[pBBoxMinY] = qy; expanded = true; }
+        if (qz < props[pBBoxMinZ]) { props[pBBoxMinZ] = qz; expanded = true; }
+        if (qx > props[pBBoxMaxX]) { props[pBBoxMaxX] = qx; expanded = true; }
+        if (qy > props[pBBoxMaxY]) { props[pBBoxMaxY] = qy; expanded = true; }
+        if (qz > props[pBBoxMaxZ]) { props[pBBoxMaxZ] = qz; expanded = true; }
+
+        props[pNoExpandCount] = expanded ? 0.0 : props[pNoExpandCount] + 1.0;
+        return expanded;
+    }
+
+    template <class Properties>
+    inline void increment_streamline_nonexpansion(Properties props)
+    {
+        props[pNoExpandCount] += 1.0;
     }
 
     inline std::vector<double> read_delta_time_file(const std::string &filename)
