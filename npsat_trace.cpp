@@ -24,6 +24,7 @@
 #include "npsat_trace/cached_velocity.h"
 #include "npsat_trace/particle_reader.h"
 #include "npsat_trace/reader_helpers.h"
+#include "npsat_trace/streamline_merge.h"
 
 
 
@@ -48,7 +49,9 @@ private:
   void load_vface_rt0_values_step(const std::string &prefix, const unsigned int step_no);
   void read_particle_well_flows_for_step(const std::string &prefix, unsigned int step);
   void read_water_table_for_step(const std::string &prefix, unsigned int step);
-  npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(const typename DoFHandler<dim>::active_cell_iterator &cell);
+  npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    std::ofstream &dbg_cell_list);
   npsat_trace::WellBoreTraceResults<dim> well_bore_flow_trace(const typename DoFHandler<dim>::active_cell_iterator &current_cell, const Point<dim> &x_in) const;
 
 
@@ -146,15 +149,14 @@ void NPSAT_TRACE<dim>::run() {
 
     distribute_particles(seeds0);
 
+
     // ------------------------------------------------------------
     // Prepare per-rank output file for this iter
     // ------------------------------------------------------------
     const std::string rank_str = Utilities::int_to_string(my_rank, 4);
     const std::string iter_str = Utilities::int_to_string(iter, 4);
-    const std::string fname = topt.output_prefix + "_streamlines_rank_" + rank_str + "_iter_" + iter_str + ".dat";
-
-    std::ofstream sl_out(fname, std::ios::app);
-    AssertThrow(sl_out.good(), ExcMessage("Could not open streamline output: " + fname));
+    const std::string output_base = topt.output_prefix + "_streamlines_rank_" + rank_str + "_iter_" + iter_str;
+    npsat_trace::StreamlineOutput sl_out(output_base, topt.write_ascii, topt.write_bin);
 
     // ---------------------------
     // (B) LOOP OVER TIME STEPS
@@ -232,10 +234,13 @@ void NPSAT_TRACE<dim>::run() {
           }
 
           std::ofstream dbg_out;
-          if (n_proc == 1)
-          {
-            const std::string f_dbg_name = "dbg_particles.dat";
+          std::ofstream dbg_cell_list;
+          if (topt.misc_opt.particle_traj_dbg){
+            const std::string f_dbg_name = topt.misc_opt.dbg_prefix + "_dbg_particles_rank_" + rank_str + ".dat";
             dbg_out.open(f_dbg_name, std::ios::trunc);
+
+            const std::string f_dbg_cell_list_name = topt.misc_opt.dbg_prefix + "_cell_list_rank_" + rank_str + ".dat";
+            dbg_cell_list.open(f_dbg_cell_list_name, std::ios::trunc);
           }
 
           // -----------------------------
@@ -276,7 +281,7 @@ void NPSAT_TRACE<dim>::run() {
 
             streamline_steps += 1.0;
 
-            auto &cached_cell = get_or_build_cell_cache(current_cell);
+            auto &cached_cell = get_or_build_cell_cache(current_cell, dbg_cell_list);
 
             const Point<dim> x = particle->get_location();
 
@@ -321,7 +326,7 @@ void NPSAT_TRACE<dim>::run() {
             // Calculate the velocity
             cached_cell.compute_velocity_at_particle(x_ref,u,vmag);
 
-            if (dbg_out.is_open())
+            if (topt.misc_opt.particle_traj_dbg)
               dbg_out << x[0] << " " << x[1] << " " << x[2] << " " << u[0] << " " << u[1] << " " << u[2] << std::endl;
 
             u = u/topt.sim_opt.porosity;
@@ -545,6 +550,14 @@ void NPSAT_TRACE<dim>::run() {
       else
         step = (step + N_time_steps - 1) % N_time_steps;
     }// while loop over time steps
+    sl_out.close();
+    npsat_trace::merge_streamline_iteration(topt.output_prefix,
+                                            static_cast<unsigned int>(iter),
+                                            n_proc,
+                                            my_rank,
+                                            topt.write_ascii,
+                                            topt.write_bin,
+                                            mpi_communicator);
     iter++;
   } // End of main while loop
 }

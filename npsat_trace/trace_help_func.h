@@ -6,8 +6,10 @@
 #define TRACE_HELP_FUNC_H
 
 #include <cmath>
+#include <fstream>
 #include <istream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace npsat_trace {
     using namespace  dealii;
@@ -15,6 +17,19 @@ namespace npsat_trace {
     // ----------------------------
     // Helper: POD binary IO
     // ----------------------------
+    template <class T>
+    inline void write_pod(std::ostream &out, const T &v)
+    {
+        static_assert(std::is_trivially_copyable<T>::value,
+                      "write_pod requires trivially copyable type");
+
+        out.write(reinterpret_cast<const char *>(&v),
+                  static_cast<std::streamsize>(sizeof(T)));
+
+        if (!out)
+            throw std::runtime_error("Binary write failed while writing POD value.");
+    }
+
     template <class T>
     inline void read_pod(std::istream &in, T &v)
     {
@@ -104,6 +119,45 @@ namespace npsat_trace {
         return delta_times;
     }
 
+    struct StreamlineOutput
+    {
+        std::ofstream ascii;
+        std::ofstream bin;
+        bool write_ascii = true;
+        bool write_bin = false;
+
+        StreamlineOutput(const std::string &base_name,
+                         const bool write_ascii_in,
+                         const bool write_bin_in)
+            : write_ascii(write_ascii_in)
+            , write_bin(write_bin_in)
+        {
+            if (write_ascii)
+            {
+                const std::string fname = base_name + ".dat";
+                ascii.open(fname, std::ios::app);
+                if (!ascii.good())
+                    throw std::runtime_error("Could not open ASCII streamline output: " + fname);
+            }
+
+            if (write_bin)
+            {
+                const std::string fname = base_name + ".bin";
+                bin.open(fname, std::ios::binary | std::ios::app);
+                if (!bin.good())
+                    throw std::runtime_error("Could not open binary streamline output: " + fname);
+            }
+        }
+
+        void close()
+        {
+            if (ascii.is_open())
+                ascii.close();
+            if (bin.is_open())
+                bin.close();
+        }
+    };
+
     inline bool is_comment_or_empty(const std::string &line)
     {
         auto it = std::find_if_not(line.begin(), line.end(),
@@ -129,12 +183,32 @@ namespace npsat_trace {
         return toks;
     }
 
-    static void write_termination(std::ofstream &out, const double pid, const double Eid, const double Sid, const int er) {
-        out << -1 << ' '
-            << static_cast<long long>(pid) << ' '
-            << static_cast<long long>(Eid) << ' '
-            << static_cast<long long>(Sid) << ' '
-            << er << ' ' << 0 << ' ' << 0 << '\n';
+    static void write_termination(StreamlineOutput &out, const double pid, const double Eid, const double Sid, const int er) {
+        if (out.write_ascii)
+        {
+            out.ascii << -1 << ' '
+                << static_cast<long long>(pid) << ' '
+                << static_cast<long long>(Eid) << ' '
+                << static_cast<long long>(Sid) << ' '
+                << er << ' ' << 0 << ' ' << 0 << '\n';
+        }
+
+        if (out.write_bin)
+        {
+            const double record[7] = {
+                -1.0,
+                pid,
+                Eid,
+                Sid,
+                static_cast<double>(er),
+                0.0,
+                0.0
+            };
+            out.bin.write(reinterpret_cast<const char *>(record),
+                          static_cast<std::streamsize>(sizeof(record)));
+            if (!out.bin)
+                throw std::runtime_error("Binary write failed while writing streamline termination record.");
+        }
     }
 
     template <typename T>
@@ -144,14 +218,34 @@ namespace npsat_trace {
         return std::max(lo, std::min(value, hi));
     }
 
-    static void write_sample(std::ofstream &out,  const double pid, const double Eid, const double Sid,
+    static void write_sample(StreamlineOutput &out,  const double pid, const double Eid, const double Sid,
                              const dealii::Point<3> &x, const double vmag)
     {
-        out << static_cast<long long>(pid) << ' '
-            << static_cast<long long>(Eid) << ' '
-            << static_cast<long long>(Sid) << ' '
-            << x[0] << ' ' << x[1] << ' ' << x[2] << ' '
-            << vmag << '\n';
+        if (out.write_ascii)
+        {
+            out.ascii << static_cast<long long>(pid) << ' '
+                << static_cast<long long>(Eid) << ' '
+                << static_cast<long long>(Sid) << ' '
+                << x[0] << ' ' << x[1] << ' ' << x[2] << ' '
+                << vmag << '\n';
+        }
+
+        if (out.write_bin)
+        {
+            const double record[7] = {
+                pid,
+                Eid,
+                Sid,
+                x[0],
+                x[1],
+                x[2],
+                vmag
+            };
+            out.bin.write(reinterpret_cast<const char *>(record),
+                          static_cast<std::streamsize>(sizeof(record)));
+            if (!out.bin)
+                throw std::runtime_error("Binary write failed while writing streamline sample record.");
+        }
     }
 
     template <int dim>
@@ -237,7 +331,7 @@ namespace npsat_trace {
                         if (cand->point_inside(p)) {
                             // Point found in a locally owned or ghost cell
                             cell = cand;
-                            std::cout << "Found point in cell " << cell->id().to_string() << std::endl;
+                            //std::cout << "Found point in cell " << cell->id().to_string() << std::endl;
                             return true;
                         }
 

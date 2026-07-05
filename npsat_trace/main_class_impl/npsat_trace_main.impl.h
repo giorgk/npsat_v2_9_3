@@ -215,7 +215,7 @@ void NPSAT_TRACE<dim>::read_water_table_for_step(const std::string &prefix, unsi
 
 template <int dim>
 npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_cell_cache(
-    const typename DoFHandler<dim>::active_cell_iterator &cell) {
+    const typename DoFHandler<dim>::active_cell_iterator &cell, std::ofstream &dbg_cell_list) {
 
     AssertThrow(cell->is_locally_owned(), ExcMessage("get_or_build_cell_cache expects a locally owned cell."));
     AssertThrow(cell->is_active(), ExcMessage("Expected active cell."));
@@ -227,7 +227,7 @@ npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_ce
         // New cache build path:
         // - rt0_map contains static face gid/sign/flag information
         // - vface contains this step's ghosted RT0 face-normal velocities
-        all_cells_cache[slot].init_cache(cell, rt0_map, vface);
+        all_cells_cache[slot].init_cache(cell, rt0_map, vface, my_rank, topt.misc_opt, dbg_cell_list);
         all_cells_cache_valid[slot] = true;
     }
     return all_cells_cache[slot];

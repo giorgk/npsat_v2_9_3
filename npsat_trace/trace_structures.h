@@ -25,41 +25,50 @@ namespace npsat_trace {
         int max_age = -1;
     };
 
+    struct Misc_opt {
+        std::string dbg_prefix;
+        bool init_cell_dbg = false;
+        bool particle_traj_dbg = false;
+    };
+
     struct Trace_options {
         std::string input_prefix; // The main prefix for output files from NSPAT flow
         std::string output_prefix;
         std::string particles_file;
         std::string delta_time_file;
         Sim_opt sim_opt;
+        Misc_opt misc_opt;
         int n_paticles_parallel = 20000;
 
         int write_loaded_tria = 0;
         int exit_after_load_tria = 0;
+        bool write_bin = false;
+        bool write_ascii = true;
     };
 
     enum Prop : unsigned int
     {
         pPid = 0,
-        pEid = 1,
-        pSid = 2,
-        //pRt  = 3,
-        //pRf  = 3,
-        //pAge = 4,        // double
-        pDtRemaining = 4,// double
-        pVmag = 5,       // double (last velocity magnitude)
-        pState = 6,    //TODO define states optional: 0 dormant, 1 active, 2 exited
-        pStreamlineSteps = 7,
-        pAge = 8,
-        pBBoxMinX = 9,
-        pBBoxMinY = 10,
-        pBBoxMinZ = 11,
-        pBBoxMaxX = 12,
-        pBBoxMaxY = 13,
-        pBBoxMaxZ = 14,
-        pNoExpandCount = 15,
+        pEid,
+        pSid,
+        //pRt,
+        //pRf,
+        pDtRemaining,// double
+        pVmag,       // double (last velocity magnitude)
+        pState,    //TODO define states optional: 0 dormant, 1 active, 2 exited
+        pStreamlineSteps,
+        pAge,
+        pBBoxMinX,
+        pBBoxMinY,
+        pBBoxMinZ,
+        pBBoxMaxX,
+        pBBoxMaxY,
+        pBBoxMaxZ,
+        pNoExpandCount,
+        n_particle_props
     };
 
-    static constexpr unsigned int n_particle_props = 9;
+    //static constexpr unsigned int n_particle_props = 9;
 
     enum EndReason : int
     {

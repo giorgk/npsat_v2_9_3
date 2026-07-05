@@ -71,7 +71,9 @@ namespace npsat_trace {
         po::options_description config_options("Configuration file options");
         config_options.add_options()
         //[Data]
-        ("Data.Prefix", po::value<std::string>(), "Main prefix for input files")
+        ("Data.Prefix", po::value<std::string>(), "Main prefix for input files from flow simulation")
+        ("Data.Particle_file", po::value<std::string>(), "Particle file name (include full path)")
+
 
         //[Simulation]
         ("Simulation.Delta_time_file", po::value<std::string>(), "Filename with one delta-time value per row")
@@ -87,11 +89,21 @@ namespace npsat_trace {
         ("Simulation.MaxStreamlineSteps", po::value<int>()->default_value(10000), "Maximum integration steps per particle streamline")
         ("Simulation.MaxNonExpandingSteps", po::value<int>()->default_value(50), "Terminate particles after this many non-expanding trajectory steps")
         ("Simulation.MaxAge", po::value<int>()->default_value(std::numeric_limits<int>::max()), "Maximum total particle travel time")
+        ("Simulation.Max_particles_per_iter", po::value<int>()->default_value(20000), "Maximum number of particles per iterations")
+
 
         //[Output]
         ("Output.Prefix", po::value<std::string>(), "Main prefix for output files")
         ("Output.Print_loaded_tria", po::value<int>()->default_value(0), "Print the loaded triangulation for debug")
         ("Output.Load_tria_exit", po::value<int>()->default_value(0), "Exit after Loading triangulationa")
+        ("Output.Write_bin", po::value<int>()->default_value(0), "Write streamline output in binary format")
+        ("Output.Write_ascii", po::value<int>()->default_value(1), "Write streamline output in ASCII format")
+
+        //[Misc]
+        ("Misc.Dbg_prefix", po::value<std::string>(), "Main prefix for debug files")
+        ("Misc.Init_cell_dbg", po::value<int>()->default_value(0), "Enable debug output for cell initialization")
+        ("Misc.Particle_traj_dbg", po::value<int>()->default_value(0), "Enable debug output for particle trajectories")
+
 
 
 
@@ -121,11 +133,16 @@ namespace npsat_trace {
 
                 {//Data
                     tr_opt.input_prefix = vm_cfg["Data.Prefix"].as<std::string>();
+                    tr_opt.particles_file = vm_cfg["Data.Particle_file"].as<std::string>();
                 }
                 {// Output
                     tr_opt.output_prefix = vm_cfg["Output.Prefix"].as<std::string>();
                     tr_opt.write_loaded_tria = vm_cfg["Output.Print_loaded_tria"].as<int>();
                     tr_opt.exit_after_load_tria = vm_cfg["Output.Load_tria_exit"].as<int>() != 0;
+                    tr_opt.write_bin = vm_cfg["Output.Write_bin"].as<int>() != 0;
+                    tr_opt.write_ascii = vm_cfg["Output.Write_ascii"].as<int>() != 0;
+                    if (!tr_opt.write_bin && !tr_opt.write_ascii)
+                        throw std::runtime_error("At least one of Output.Write_bin or Output.Write_ascii must be enabled.");
                 }
                 {// Simulation
                     tr_opt.delta_time_file = vm_cfg["Simulation.Delta_time_file"].as<std::string>();
@@ -141,6 +158,13 @@ namespace npsat_trace {
                     tr_opt.sim_opt.n_max_streamline_steps = vm_cfg["Simulation.MaxStreamlineSteps"].as<int>();
                     tr_opt.sim_opt.n_max_nonexpanding_steps = vm_cfg["Simulation.MaxNonExpandingSteps"].as<int>();
                     tr_opt.sim_opt.max_age = vm_cfg["Simulation.MaxAge"].as<int>();
+                    tr_opt.n_paticles_parallel = vm_cfg["Simulation.Max_particles_per_iter"].as<int>();
+                }
+
+                {// Misc
+                    tr_opt.misc_opt.dbg_prefix = vm_cfg["Misc.Dbg_prefix"].as<std::string>();
+                    tr_opt.misc_opt.init_cell_dbg = vm_cfg["Misc.Init_cell_dbg"].as<int>() != 0;
+                    tr_opt.misc_opt.particle_traj_dbg = vm_cfg["Misc.Particle_traj_dbg"].as<int>() != 0;
                 }
 
             }

@@ -4,6 +4,9 @@
 
 #ifndef CACHED_VELOCITY_H
 #define CACHED_VELOCITY_H
+
+#include "trace_structures.h"
+
 namespace npsat_trace {
     using namespace dealii;
 
@@ -155,7 +158,7 @@ namespace npsat_trace {
         using CellIt = typename DoFHandler<dim>::active_cell_iterator;
 
         void init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
-            const TrilinosWrappers::MPI::Vector &vface);
+            const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank, Misc_opt &misc_opt, std::ofstream &dbg_cell_list);
 
         const std::array<double, 4> &get_xv() const { return xv; }
         const std::array<double, 4> &get_yv() const { return yv; }
@@ -220,7 +223,7 @@ namespace npsat_trace {
 
     template<int dim>
     void CellVelocityCacheRT0Split3D<dim>::init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
-        const TrilinosWrappers::MPI::Vector &vface) {
+        const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank, Misc_opt &misc_opt, std::ofstream &dbg_cell_list) {
 
         static_assert(std::is_same<CellIt, typename DoFHandler<dim>::active_cell_iterator>::value,
             "CellIt must be DoFHandler<dim>::active_cell_iterator");
@@ -228,7 +231,7 @@ namespace npsat_trace {
         clear();
 
         cell = cell_in;
-        std::cout << cell->id() << std::endl;
+        //std::cout << cell->id() << std::endl;
         AssertThrow(cell->is_active(), dealii::ExcMessage("Expected active cell."));
         AssertThrow(cell->is_locally_owned(), dealii::ExcMessage("Expected locally owned cell."));
 
@@ -271,8 +274,10 @@ namespace npsat_trace {
             zt[i] = pt[2];
         }
 
-        {
-            const std::string fn = "init_cell_" + cell->id().to_string();
+        if (misc_opt.init_cell_dbg){
+            const std::string rank_str = Utilities::int_to_string(my_rank, 4);
+            const std::string fn = misc_opt.dbg_prefix + "_rank_" + rank_str + "_init_cell_" + cell->id().to_string();
+            dbg_cell_list << fn << std::endl;
             std::cout << "Writing subcells to " << fn << std::endl;
             write_subcells_arrays_to_txt(fn);
         }
