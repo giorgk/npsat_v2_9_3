@@ -10,6 +10,7 @@
 #include <istream>
 #include <stdexcept>
 #include <type_traits>
+#include "trace_structures.h"
 
 namespace npsat_trace {
     using namespace  dealii;
@@ -462,21 +463,38 @@ namespace npsat_trace {
     inline bool getUV_NewtonRaphson(double &u, double &v,
                                     double tx, double ty,
                                     const std::array<double,4> &xv,
-                                    const std::array<double,4> &yv)
+                                    const std::array<double,4> &yv,
+                                    NewtonDebugInfo *dbg)
     {
+        if (dbg)
+        {
+            dbg->failure   = NewtonFailure::None;
+            dbg->iterations = 0;
+            dbg->u = 0.0;
+            dbg->v = 0.0;
+            dbg->detJ = 0.0;
+            dbg->residual = 0.0;
+            dbg->curX = 0.0;
+            dbg->curY = 0.0;
+        }
+
         // swap indices 2 and 3
         const double x0 = xv[0], y0 = yv[0];
         const double x1 = xv[1], y1 = yv[1];
         const double x2 = xv[3], y2 = yv[3];
         const double x3 = xv[2], y3 = yv[2];
 
-        u = 0.0, v = 0.0; // Initial guess at the center of the element
-        constexpr int max_iter = 12;
-        constexpr double tol = 1e-10;
+        u = 0.0;
+        v = 0.0;
 
-        for (int i = 0; i < max_iter; ++i)
+        const int max_iter = 12;
+        const double tol = 1e-10;
+
+        for (int i=0; i<max_iter; ++i)
         {
-            // Shape functions at current (u, v)
+            if (dbg)
+                dbg->iterations = i+1;
+
             const double N0 = 0.25*(1-u)*(1-v);
             const double N1 = 0.25*(1+u)*(1-v);
             const double N2 = 0.25*(1+u)*(1+v);
@@ -485,33 +503,77 @@ namespace npsat_trace {
             const double curX = N0*x0 + N1*x1 + N2*x2 + N3*x3;
             const double curY = N0*y0 + N1*y1 + N2*y2 + N3*y3;
 
-            const double rx = tx - curX;
-            const double ry = ty - curY;
+            if (dbg)
+            {
+                dbg->curX = curX;
+                dbg->curY = curY;
+            }
 
-            if (std::sqrt(rx*rx + ry*ry) < tol)
+            const double rx = tx-curX;
+            const double ry = ty-curY;
+
+            const double res = std::sqrt(rx*rx+ry*ry);
+
+            if (dbg)
+            {
+                dbg->u = u;
+                dbg->v = v;
+                dbg->residual = res;
+            }
+
+            if (res < tol)
                 return true;
 
-            const double dxdu = 0.25 * (-(1 - v) * x0 + (1 - v) * x1 + (1 + v) * x2 - (1 + v) * x3);
-            const double dxdv = 0.25 * (-(1 - u) * x0 - (1 + u) * x1 + (1 + u) * x2 + (1 - u) * x3);
+            const double dxdu =
+                0.25 * (-(1-v)*x0 + (1-v)*x1 + (1+v)*x2 - (1+v)*x3);
 
-            const double dydu = 0.25 * (-(1 - v) * y0 + (1 - v) * y1 + (1 + v) * y2 - (1 + v) * y3);
-            const double dydv = 0.25 * (-(1 - u) * y0 - (1 + u) * y1 + (1 + u) * y2 + (1 - u) * y3);
+            const double dxdv =
+                0.25 * (-(1-u)*x0 - (1+u)*x1 + (1+u)*x2 + (1-u)*x3);
+
+            const double dydu =
+                0.25 * (-(1-v)*y0 + (1-v)*y1 + (1+v)*y2 - (1+v)*y3);
+
+            const double dydv =
+                0.25 * (-(1-u)*y0 - (1+u)*y1 + (1+u)*y2 + (1-u)*y3);
 
             const double detJ = dxdu*dydv - dxdv*dydu;
-            if (std::abs(detJ) < 1e-20)
-                return false;
 
-            const double du = ( dydv*rx - dxdv*ry) / detJ;
-            const double dv = (-dydu*rx + dxdu*ry) / detJ;
+            if (dbg)
+                dbg->detJ = detJ;
+
+            if (std::abs(detJ) < 1e-20)
+            {
+                if (dbg)
+                    dbg->failure = NewtonFailure::SingularJacobian;
+
+                return false;
+            }
+
+            const double du = ( dydv*rx - dxdv*ry)/detJ;
+            const double dv = (-dydu*rx + dxdu*ry)/detJ;
 
             u += du;
             v += dv;
 
+            if (dbg)
+            {
+                dbg->u = u;
+                dbg->v = v;
+            }
+
             if (!std::isfinite(u) || !std::isfinite(v))
+            {
+                if (dbg)
+                    dbg->failure = NewtonFailure::NanIterate;
+
                 return false;
+            }
         }
-        // Accept if close enough
-        return (u >= -1.05 && u <= 1.05 && v >= -1.05 && v <= 1.05);
+
+        if (dbg)
+            dbg->failure = NewtonFailure::MaxIterations;
+
+        return false;
 
     }
 

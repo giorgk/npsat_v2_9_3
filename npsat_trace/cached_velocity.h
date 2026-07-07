@@ -5,6 +5,10 @@
 #ifndef CACHED_VELOCITY_H
 #define CACHED_VELOCITY_H
 
+#include <iomanip>
+#include <sstream>
+#include <string>
+
 #include "trace_structures.h"
 
 namespace npsat_trace {
@@ -187,6 +191,7 @@ namespace npsat_trace {
 
         bool compute_reference_point(const Point<3> &x_phys,Point<3> &x_ref) const;
         Point<dim> map_reference_point_to_physical(const Point<dim> &x_ref, bool space01 = false) const;
+        std::string format_reference_point_failure(const Point<dim> &p) const;
 
 
         CellIt cell;
@@ -214,6 +219,7 @@ namespace npsat_trace {
         static constexpr unsigned int perm_ccw[4] = {0, 1, 3, 2};
         const unsigned int f_bot = 4; // -z
         const unsigned int f_top = 5; // +z
+        mutable NewtonDebugInfo last_newton_debug;
 
 
     };
@@ -933,7 +939,7 @@ namespace npsat_trace {
     template<int dim>
     void CellVelocityCacheRT0Split3D<dim>::get_clamped_ref_coords(const Point<dim> &p, Point<dim> &p_ref) {
         const bool ok = compute_reference_point(p,p_ref);
-        AssertThrow(ok, dealii::ExcMessage("Failed to compute reference coordinates."));
+        AssertThrow(ok, dealii::ExcMessage(format_reference_point_failure(p)));
 
         // This function should be called only if we are sure that point p is inside the cell.
         // However, because point inside uses linear mapping we clamp here the values
@@ -941,6 +947,94 @@ namespace npsat_trace {
         const double eps_in = 1e-10;
         for (unsigned int d = 0; d < dim; ++d)
             p_ref[d] = clamp_(p_ref[d], -1.0 + eps_in, 1.0 - eps_in);
+    }
+
+    template<int dim>
+    std::string CellVelocityCacheRT0Split3D<dim>::format_reference_point_failure(const Point<dim> &p) const {
+        std::ostringstream out;
+        out << std::setprecision(17);
+
+        out << "Failed to compute reference coordinates.\n";
+
+        out << "Point p = (";
+        for (unsigned int d=0; d<dim; ++d)
+        {
+            if (d) out << ", ";
+            out << p[d];
+        }
+        out << ")\n";
+
+        out << "\nCached bottom vertices:\n";
+        for (unsigned int i=0; i<4; ++i)
+        {
+            out << "  " << i << " : ("
+                << xv[i] << ", "
+                << yv[i] << ", "
+                << zb[i] << ")\n";
+        }
+
+        out << "\nCached top vertices:\n";
+        for (unsigned int i=0; i<4; ++i)
+        {
+            out << "  " << i << " : ("
+                << xv[i] << ", "
+                << yv[i] << ", "
+                << zt[i] << ")\n";
+        }
+
+        out << "\nNewton information:\n";
+
+        out << "  failure    = ";
+        switch (last_newton_debug.failure)
+        {
+        case NewtonFailure::None:
+            out << "None";
+            break;
+
+        case NewtonFailure::SingularJacobian:
+            out << "SingularJacobian";
+            break;
+
+        case NewtonFailure::NanIterate:
+            out << "NanIterate";
+            break;
+
+        case NewtonFailure::MaxIterations:
+            out << "MaxIterations";
+            break;
+
+        default:
+            out << "Unknown";
+            break;
+        }
+        out << "\n";
+
+        out << "  iterations = "
+            << last_newton_debug.iterations << "\n";
+
+        out << "  (u,v) = ("
+            << last_newton_debug.u << ", "
+            << last_newton_debug.v << ")\n";
+
+        out << "  detJ = "
+            << last_newton_debug.detJ << "\n";
+
+        out << "  residual = "
+            << last_newton_debug.residual << "\n";
+
+        out << "  mapped point = ("
+            << last_newton_debug.curX << ", "
+            << last_newton_debug.curY << ")\n";
+
+        out << "  target point = ("
+            << p[0] << ", "
+            << p[1] << ")\n";
+
+        out << "  delta = ("
+            << p[0] - last_newton_debug.curX << ", "
+            << p[1] - last_newton_debug.curY << ")\n";
+
+        return out.str();
     }
 
     template<int dim>
@@ -1113,39 +1207,126 @@ namespace npsat_trace {
 
     template <int dim>
     bool CellVelocityCacheRT0Split3D<dim>::compute_reference_point(const Point<3> &x_phys,Point<3> &x_ref) const {
-        double u, v;
-        bool ok = getUV_Analytical(u, v, x_phys[0], x_phys[1], xv, yv);
+        bool have_uv = false;
+        double u = 0.0, v = 0.0;
 
-        if (!ok || u < -1.2 || u > 1.2 || v < -1.2 || v > 1.2)
-            ok = getUV_NewtonRaphson(u, v, x_phys[0], x_phys[1], xv, yv);
+        // ------------------------------------------------------------------
+        // 1. Fast analytical inversion
+        // ------------------------------------------------------------------
+        if (getUV_Analytical(u, v, x_phys[0], x_phys[1], xv, yv))
+            have_uv = true;
 
-        if (!ok)
-            return false;
+        // ------------------------------------------------------------------
+        // 2. Robust Newton fallback
+        // ------------------------------------------------------------------
+        if (!have_uv || u < -1.2 || u > 1.2 || v < -1.2 || v > 1.2)
+        {
+            NewtonDebugInfo dbg;
+            have_uv = getUV_NewtonRaphson(u, v, x_phys[0], x_phys[1], xv, yv, &dbg);
+            last_newton_debug = dbg;
+        }
+        bool have_last_uv = std::isfinite(last_newton_debug.u) && std::isfinite(last_newton_debug.v);
 
-        // Q1 shape functions on quad (u,v) in [-1,1]
-        const double N0 = 0.25*(1-u)*(1-v);
-        const double N1 = 0.25*(1+u)*(1-v);
-        const double N2 = 0.25*(1+u)*(1+v);
-        const double N3 = 0.25*(1-u)*(1+v);
+        // ------------------------------------------------------------
+        // If we have (u,v), compute w and return.
+        // get_clamped_ref_coords() will clamp afterwards.
+        // ------------------------------------------------------------
+        if (have_uv)
+        {
+            const double N0 = 0.25*(1.0-u)*(1.0-v);
+            const double N1 = 0.25*(1.0+u)*(1.0-v);
+            const double N2 = 0.25*(1.0+u)*(1.0+v);
+            const double N3 = 0.25*(1.0-u)*(1.0+v);
 
-        const double z_bottom = N0*zb[0] + N1*zb[1] + N2*zb[2] + N3*zb[3];
-        const double z_top    = N0*zt[0] + N1*zt[1] + N2*zt[2] + N3*zt[3];
+            const double z_bottom =
+                N0*zb[0] + N1*zb[1] + N2*zb[2] + N3*zb[3];
 
-        const double H = z_top - z_bottom;
-        if (H <= 0.0)
-            return false;
+            const double z_top =
+                N0*zt[0] + N1*zt[1] + N2*zt[2] + N3*zt[3];
 
-        const double w = 2.0*(x_phys[2] - z_bottom)/H - 1.0; // [-1,1]
+            const double H = z_top - z_bottom;
 
-        x_ref[0] = u;
-        x_ref[1] = v;
-        x_ref[2] = w;
+            if (H > 1e-12)
+            {
+                x_ref[0] = u;
+                x_ref[1] = v;
+                x_ref[2] = 2.0*(x_phys[2]-z_bottom)/H - 1.0;
 
-        // inside tolerance check (you can decide strictness)
-        return (u >= -1.001 && u <= 1.001 &&
-                v >= -1.001 && v <= 1.001 &&
-                w >= -1.001 && w <= 1.001);
+                return true;
+            }
+        }
 
+        // ------------------------------------------------------------------
+        // 3. deal.II fallback
+        // ------------------------------------------------------------------
+        try
+        {
+            MappingQ1<dim> mapping;
+            x_ref = mapping.transform_real_to_unit_cell(cell, x_phys);
+            return true;
+        }
+        catch (const dealii::ExceptionBase &)
+        {
+            // Continue to crude approximation.
+        }
+
+        // ------------------------------------------------------------
+        // 4. Use the last Newton iterate even if Newton reported failure.
+        // This is usually much better than a bounding-box approximation.
+        // ------------------------------------------------------------
+        if (have_last_uv)
+        {
+            const double N0 = 0.25*(1.0-u)*(1.0-v);
+            const double N1 = 0.25*(1.0+u)*(1.0-v);
+            const double N2 = 0.25*(1.0+u)*(1.0+v);
+            const double N3 = 0.25*(1.0-u)*(1.0+v);
+
+            const double z_bottom = N0*zb[0] + N1*zb[1] + N2*zb[2] + N3*zb[3];
+
+            const double z_top =
+                N0*zt[0] + N1*zt[1] + N2*zt[2] + N3*zt[3];
+
+            const double H = z_top - z_bottom;
+
+            if (H > 1e-12)
+            {
+                x_ref[0] = u;
+                x_ref[1] = v;
+                x_ref[2] = 2.0*(x_phys[2]-z_bottom)/H - 1.0;
+
+                return true;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // 5. Ultimate fallback: bounding-box approximation
+        // ------------------------------------------------------------
+
+        double xmin = xv[0], xmax = xv[0];
+        double ymin = yv[0], ymax = yv[0];
+        double zmin = zb[0], zmax = zt[0];
+
+        for (unsigned int i=1; i<4; ++i)
+        {
+            xmin = std::min(xmin, xv[i]);
+            xmax = std::max(xmax, xv[i]);
+
+            ymin = std::min(ymin, yv[i]);
+            ymax = std::max(ymax, yv[i]);
+
+            zmin = std::min(zmin, zb[i]);
+            zmax = std::max(zmax, zt[i]);
+        }
+
+        const double dx = std::max(xmax-xmin, 1e-12);
+        const double dy = std::max(ymax-ymin, 1e-12);
+        const double dz = std::max(zmax-zmin, 1e-12);
+
+        x_ref[0] = 2.0*(x_phys[0]-xmin)/dx - 1.0;
+        x_ref[1] = 2.0*(x_phys[1]-ymin)/dy - 1.0;
+        x_ref[2] = 2.0*(x_phys[2]-zmin)/dz - 1.0;
+
+        return true;
     }
 
     template <int dim>

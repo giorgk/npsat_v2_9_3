@@ -195,6 +195,37 @@ namespace npsat_trace {
         dealii::Point<dim> new_pos;
     };
 
+    enum class NewtonFailure
+    {
+        None,
+        SingularJacobian,
+        NanIterate,
+        MaxIterations
+    };
+
+    struct NewtonDebugInfo
+    {
+        NewtonFailure failure;
+        int iterations;
+        double u;
+        double v;
+        double detJ;
+        double residual;
+        double curX;
+        double curY;
+
+        NewtonDebugInfo()
+            : failure(NewtonFailure::None),
+              iterations(0),
+              u(0.0),
+              v(0.0),
+              detJ(0.0),
+              residual(0.0),
+              curX(0.0),
+              curY(0.0)
+        {}
+    };
+
 }
 
 #endif //NPSAT_V2_TRACE_STRUCTURES_H
