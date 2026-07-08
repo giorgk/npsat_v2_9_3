@@ -29,6 +29,18 @@ namespace npsat_trace {
         std::string dbg_prefix;
         bool init_cell_dbg = false;
         bool particle_traj_dbg = false;
+        bool cache_bilinear_coefficients = false;
+    };
+
+    struct BilinearMapCoefficients
+    {
+        double a0, a1, a2, a3;
+        double b0, b1, b2, b3;
+
+        BilinearMapCoefficients()
+            : a0(0.0), a1(0.0), a2(0.0), a3(0.0),
+              b0(0.0), b1(0.0), b2(0.0), b3(0.0)
+        {}
     };
 
     struct Trace_options {

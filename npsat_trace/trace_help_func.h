@@ -354,8 +354,9 @@ namespace npsat_trace {
     }
 
 
-    inline bool getUV_Analytical(double &u, double &v, double x, double y,
-                                 const std::array<double,4> &xv, const std::array<double,4> &yv) {
+    inline BilinearMapCoefficients build_bilinear_map_coefficients(
+        const std::array<double,4> &xv, const std::array<double,4> &yv)
+    {
         // Convert deal.II vertex order {0,1,2,3} = BL, BR, TL, TR
         // to Q1 order {0,1,2,3} = BL, BR, TR, TL
         const double x0 = xv[0], y0 = yv[0];
@@ -363,19 +364,24 @@ namespace npsat_trace {
         const double x2 = xv[3], y2 = yv[3]; // swapped
         const double x3 = xv[2], y3 = yv[2]; // swapped
 
-        // Bilinear map coefficients for x(u,v), y(u,v) with (u,v) in [-1,1]
-        // Bilinear map:
-        // x(u,v) = a0 + a1*u + a2*v + a3*u*v
-        // y(u,v) = b0 + b1*u + b2*v + b3*u*v
-        double a0 = 0.25 * (x0 + x1 + x2 + x3);
-        double a1 = 0.25 * (-x0 + x1 + x2 - x3);
-        double a2 = 0.25 * (-x0 - x1 + x2 + x3);
-        double a3 = 0.25 * (x0 - x1 + x2 - x3);
+        BilinearMapCoefficients c;
+        c.a0 = 0.25 * (x0 + x1 + x2 + x3);
+        c.a1 = 0.25 * (-x0 + x1 + x2 - x3);
+        c.a2 = 0.25 * (-x0 - x1 + x2 + x3);
+        c.a3 = 0.25 * (x0 - x1 + x2 - x3);
 
-        double b0 = 0.25 * (y0 + y1 + y2 + y3);
-        double b1 = 0.25 * (-y0 + y1 + y2 - y3);
-        double b2 = 0.25 * (-y0 - y1 + y2 + y3);
-        double b3 = 0.25 * (y0 - y1 + y2 - y3);
+        c.b0 = 0.25 * (y0 + y1 + y2 + y3);
+        c.b1 = 0.25 * (-y0 + y1 + y2 - y3);
+        c.b2 = 0.25 * (-y0 - y1 + y2 + y3);
+        c.b3 = 0.25 * (y0 - y1 + y2 - y3);
+
+        return c;
+    }
+
+    inline bool getUV_Analytical(double &u, double &v, double x, double y,
+                                 const BilinearMapCoefficients &c) {
+        const double a0 = c.a0, a1 = c.a1, a2 = c.a2, a3 = c.a3;
+        const double b0 = c.b0, b1 = c.b1, b2 = c.b2, b3 = c.b3;
 
         // Set up Quadratic: A*v^2 + B*v + C = 0
         double dx = x - a0;
@@ -392,9 +398,9 @@ namespace npsat_trace {
         }
 
         // General bilinear case: eliminate u and solve quadratic for v
-        double A = a3 * b2 - a2 * b3;
-        double B = a3 * b1 - a1 * b3 + a2 * dy - b2 * dx;
-        double C = a1 * dy - b1 * dx;
+        const double A = a3 * b2 - a2 * b3;
+        const double B = dx * b3 - a2 * b1 - dy * a3 + b2 * a1;
+        const double C = dx * b1 - dy * a1;
         double v1, v2;
         // Solve for v
         if (std::abs(A) < 1e-14) {
@@ -458,6 +464,11 @@ namespace npsat_trace {
         }
 
         return std::isfinite(u) && std::isfinite(v);
+    }
+
+    inline bool getUV_Analytical(double &u, double &v, double x, double y,
+                                 const std::array<double,4> &xv, const std::array<double,4> &yv) {
+        return getUV_Analytical(u, v, x, y, build_bilinear_map_coefficients(xv, yv));
     }
 
     inline bool getUV_NewtonRaphson(double &u, double &v,
@@ -635,14 +646,17 @@ namespace npsat_trace {
             const int face_id = moving_up ? 5 : 4;
             const std::array<double,4> &zarr = moving_up ? zt : zb;
 
-            double u0, v0;
-            getUV_Analytical(u0, v0, l0[0], l0[1], xv, yv);
+            double u0 = 0.0, v0 = 0.0;
+            if (!getUV_Analytical(u0, v0, l0[0], l0[1], xv, yv))
+                return FindHexExitResult();
+
+            const double N0 = 0.25 * (1.0 - u0) * (1.0 - v0);
+            const double N1 = 0.25 * (1.0 + u0) * (1.0 - v0);
+            const double N2 = 0.25 * (1.0 + u0) * (1.0 + v0);
+            const double N3 = 0.25 * (1.0 - u0) * (1.0 + v0);
 
             const double z_lid_at_l0 =
-              (1.0 - u0) * (1.0 - v0) * zarr[0]
-            + u0         * (1.0 - v0) * zarr[1]
-            + (1.0 - u0) * v0         * zarr[2]
-            + u0         * v0         * zarr[3];
+                N0 * zarr[0] + N1 * zarr[1] + N2 * zarr[3] + N3 * zarr[2];
 
             if (moving_up) {
                 if (l1[2] >= z_lid_at_l0 - eps) {

@@ -6,6 +6,7 @@
 #define CACHED_VELOCITY_H
 
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <string>
 
@@ -219,6 +220,8 @@ namespace npsat_trace {
         static constexpr unsigned int perm_ccw[4] = {0, 1, 3, 2};
         const unsigned int f_bot = 4; // -z
         const unsigned int f_top = 5; // +z
+        bool cache_bilinear_coefficients = false;
+        std::unique_ptr<BilinearMapCoefficients> bilinear_coefficients;
         mutable NewtonDebugInfo last_newton_debug;
 
 
@@ -279,6 +282,10 @@ namespace npsat_trace {
             zb[i] = pb[2];
             zt[i] = pt[2];
         }
+
+        cache_bilinear_coefficients = misc_opt.cache_bilinear_coefficients;
+        if (cache_bilinear_coefficients)
+            bilinear_coefficients.reset(new BilinearMapCoefficients(build_bilinear_map_coefficients(xv, yv)));
 
         if (misc_opt.init_cell_dbg){
             const std::string rank_str = Utilities::int_to_string(my_rank, 4);
@@ -1202,6 +1209,9 @@ namespace npsat_trace {
         zb = std::array<double, 4>();
         zt = std::array<double, 4>();
 
+        cache_bilinear_coefficients = false;
+        bilinear_coefficients.reset();
+
         cell = CellIt();
     }
 
@@ -1213,7 +1223,9 @@ namespace npsat_trace {
         // ------------------------------------------------------------------
         // 1. Fast analytical inversion
         // ------------------------------------------------------------------
-        if (getUV_Analytical(u, v, x_phys[0], x_phys[1], xv, yv))
+        if (cache_bilinear_coefficients && bilinear_coefficients)
+            have_uv = getUV_Analytical(u, v, x_phys[0], x_phys[1], *bilinear_coefficients);
+        else if (getUV_Analytical(u, v, x_phys[0], x_phys[1], xv, yv))
             have_uv = true;
 
         // ------------------------------------------------------------------
@@ -1239,10 +1251,10 @@ namespace npsat_trace {
             const double N3 = 0.25*(1.0-u)*(1.0+v);
 
             const double z_bottom =
-                N0*zb[0] + N1*zb[1] + N2*zb[2] + N3*zb[3];
+                N0*zb[0] + N1*zb[1] + N2*zb[3] + N3*zb[2];
 
             const double z_top =
-                N0*zt[0] + N1*zt[1] + N2*zt[2] + N3*zt[3];
+                N0*zt[0] + N1*zt[1] + N2*zt[3] + N3*zt[2];
 
             const double H = z_top - z_bottom;
 
@@ -1281,10 +1293,10 @@ namespace npsat_trace {
             const double N2 = 0.25*(1.0+u)*(1.0+v);
             const double N3 = 0.25*(1.0-u)*(1.0+v);
 
-            const double z_bottom = N0*zb[0] + N1*zb[1] + N2*zb[2] + N3*zb[3];
+            const double z_bottom = N0*zb[0] + N1*zb[1] + N2*zb[3] + N3*zb[2];
 
             const double z_top =
-                N0*zt[0] + N1*zt[1] + N2*zt[2] + N3*zt[3];
+                N0*zt[0] + N1*zt[1] + N2*zt[3] + N3*zt[2];
 
             const double H = z_top - z_bottom;
 

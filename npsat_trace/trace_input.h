@@ -103,6 +103,7 @@ namespace npsat_trace {
         ("Misc.Dbg_prefix", po::value<std::string>(), "Main prefix for debug files")
         ("Misc.Init_cell_dbg", po::value<int>()->default_value(0), "Enable debug output for cell initialization")
         ("Misc.Particle_traj_dbg", po::value<int>()->default_value(0), "Enable debug output for particle trajectories")
+        ("Misc.Cache_bilinear_coefficients", po::value<int>()->default_value(0), "Cache bilinear map coefficients in initialized cell velocity caches")
 
 
 
@@ -165,6 +166,7 @@ namespace npsat_trace {
                     tr_opt.misc_opt.dbg_prefix = vm_cfg["Misc.Dbg_prefix"].as<std::string>();
                     tr_opt.misc_opt.init_cell_dbg = vm_cfg["Misc.Init_cell_dbg"].as<int>() != 0;
                     tr_opt.misc_opt.particle_traj_dbg = vm_cfg["Misc.Particle_traj_dbg"].as<int>() != 0;
+                    tr_opt.misc_opt.cache_bilinear_coefficients = vm_cfg["Misc.Cache_bilinear_coefficients"].as<int>() != 0;
                 }
 
             }
