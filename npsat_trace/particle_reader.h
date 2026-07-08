@@ -5,6 +5,8 @@
 #ifndef PARTICLE_READER_H
 #define PARTICLE_READER_H
 
+#include <cmath>
+
 #include "trace_structures.h"
 
 namespace  npsat_trace{
@@ -90,11 +92,11 @@ namespace  npsat_trace{
                 const auto toks = split_tokens(line);
                 if (toks.size() == 7)
                     kind = InputKind::Direct;
-                else if (toks.size() == 9)
+                else if (toks.size() == 10)
                     kind = InputKind::Wells;
                 else
                     throw std::runtime_error("Unrecognized particle input format at line " +
-                                             std::to_string(line_no) + ": expected 7 or 9 columns, got " +
+                                             std::to_string(line_no) + ": expected 7 or 10 columns, got " +
                                              std::to_string(toks.size()));
             }
             if (kind == InputKind::Direct) {
@@ -129,17 +131,23 @@ namespace  npsat_trace{
     }
 
     inline void ParticleReader::emit_well_particles(const WellRow &w, std::vector<ParticleSeed> &out) {
-        // TODO revise the generator for the well case
+        const double pi = std::acos(-1.0);
+        const double dtheta = 2.0 * pi / static_cast<double>(w.n_per_layer);
+        const double layer_offset = 2.0 * pi / static_cast<double>(w.nlay);
+
         for (int ilay = 0; ilay < w.nlay; ++ilay) {
             const double s = (w.nlay == 1) ? 0.5 : double(ilay) / double(w.nlay - 1);
             const double z = w.zbot + s * (w.ztop - w.zbot);
+            const double theta_offset = static_cast<double>(ilay) * layer_offset;
 
             for (int j = 0; j < w.n_per_layer; ++j) {
+                const double theta = theta_offset + (static_cast<double>(j) + 0.5) * dtheta;
+
                 ParticleSeed p;
                 p.Eid = w.Eid;
                 p.Sid = static_cast<id_t>(ilay * w.n_per_layer + j);
-                p.x = w.x; // around-well pattern can be injected later
-                p.y = w.y;
+                p.x = w.x + w.radius * std::cos(theta);
+                p.y = w.y + w.radius * std::sin(theta);
                 p.z = z;
                 p.rt = w.rt;
                 p.rf = w.rf;
@@ -179,12 +187,13 @@ namespace  npsat_trace{
 
     inline void ParticleReader::parse_well_line_strict(const std::string &line, WellRow &w) {
         const auto toks = split_tokens(line);
-        if (toks.size() != 9)
-            throw std::runtime_error("Well particle format error: expected 9 columns, got " +
+        if (toks.size() != 10)
+            throw std::runtime_error("Well particle format error: expected 10 columns "
+                                     "(Eid x y ztop zbot rt rf nlay n_per_layer radius), got " +
                                      std::to_string(toks.size()));
 
         std::uint64_t Eid64=0;
-        double x=0,y=0,ztop=0,zbot=0;
+        double x=0,y=0,ztop=0,zbot=0,radius=0;
         long long rt=0, rf=0, nlay=0, npl=0;
 
         {
@@ -192,16 +201,19 @@ namespace  npsat_trace{
             std::string s = line;
             normalize_separators(s);
             iss.str(s);
-            if (!(iss >> Eid64 >> x >> y >> ztop >> zbot >> rt >> rf >> nlay >> npl))
+            if (!(iss >> Eid64 >> x >> y >> ztop >> zbot >> rt >> rf >> nlay >> npl >> radius))
                 throw std::runtime_error("Well particle format parse failure.");
         }
 
         if (nlay < 2 || npl < 2)
             throw std::runtime_error("Well particle format error: nlay and n_per_layer must be >= 2.");
+        if (!std::isfinite(radius) || radius <= 0.0)
+            throw std::runtime_error("Well particle format error: radius must be finite and > 0.");
 
         w.Eid = static_cast<id_t>(Eid64);
         w.x = x; w.y = y;
         w.ztop = ztop; w.zbot = zbot;
+        w.radius = radius;
         w.rt = static_cast<std::int32_t>(rt);
         w.rf = static_cast<std::int32_t>(rf);
         w.nlay = static_cast<std::int32_t>(nlay);

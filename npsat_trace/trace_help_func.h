@@ -5,7 +5,9 @@
 #ifndef TRACE_HELP_FUNC_H
 #define TRACE_HELP_FUNC_H
 
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <istream>
 #include <stdexcept>
@@ -136,7 +138,7 @@ namespace npsat_trace {
             if (write_ascii)
             {
                 const std::string fname = base_name + ".dat";
-                ascii.open(fname, std::ios::app);
+                ascii.open(fname, std::ios::trunc);
                 if (!ascii.good())
                     throw std::runtime_error("Could not open ASCII streamline output: " + fname);
             }
@@ -144,7 +146,7 @@ namespace npsat_trace {
             if (write_bin)
             {
                 const std::string fname = base_name + ".bin";
-                bin.open(fname, std::ios::binary | std::ios::app);
+                bin.open(fname, std::ios::binary | std::ios::trunc);
                 if (!bin.good())
                     throw std::runtime_error("Could not open binary streamline output: " + fname);
             }
@@ -158,6 +160,146 @@ namespace npsat_trace {
                 bin.close();
         }
     };
+
+    struct BinaryStreamlineSample
+    {
+        std::uint64_t pid = 0;
+        std::uint64_t Eid = 0;
+        std::uint64_t Sid = 0;
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        double vmag = 0.0;
+    };
+
+    struct BinaryStreamlineTrajectory
+    {
+        std::uint64_t Eid = 0;
+        std::uint64_t Sid = 0;
+        std::uint64_t termination_pid = 0;
+        int end_reason = 0;
+        bool has_termination = false;
+        std::vector<BinaryStreamlineSample> samples;
+
+        void clear()
+        {
+            Eid = 0;
+            Sid = 0;
+            termination_pid = 0;
+            end_reason = 0;
+            has_termination = false;
+            samples.clear();
+        }
+    };
+
+    inline std::uint64_t streamline_binary_id(const double value)
+    {
+        return static_cast<std::uint64_t>(std::llround(value));
+    }
+
+    inline bool read_binary_streamline_row(std::istream &in,
+                                           std::array<double, 7> &row,
+                                           const std::string &filename)
+    {
+        in.read(reinterpret_cast<char *>(row.data()),
+                static_cast<std::streamsize>(row.size() * sizeof(double)));
+
+        if (in)
+            return true;
+
+        if (in.eof() && in.gcount() == 0)
+            return false;
+
+        throw std::runtime_error("Incomplete binary streamline record in: " + filename);
+    }
+
+    inline bool binary_streamline_row_is_termination(const std::array<double, 7> &row)
+    {
+        return row[0] == -1.0;
+    }
+
+    inline void append_binary_streamline_sample(BinaryStreamlineTrajectory &trajectory,
+                                                const std::array<double, 7> &row)
+    {
+        BinaryStreamlineSample sample;
+        sample.pid = streamline_binary_id(row[0]);
+        sample.Eid = streamline_binary_id(row[1]);
+        sample.Sid = streamline_binary_id(row[2]);
+        sample.x = row[3];
+        sample.y = row[4];
+        sample.z = row[5];
+        sample.vmag = row[6];
+
+        if (trajectory.samples.empty())
+        {
+            trajectory.Eid = sample.Eid;
+            trajectory.Sid = sample.Sid;
+        }
+        else if (trajectory.Eid != sample.Eid || trajectory.Sid != sample.Sid)
+        {
+            throw std::runtime_error("Binary streamline file changed Eid/Sid before a termination record.");
+        }
+
+        trajectory.samples.push_back(sample);
+    }
+
+    inline void set_binary_streamline_termination(BinaryStreamlineTrajectory &trajectory,
+                                                  const std::array<double, 7> &row)
+    {
+        trajectory.has_termination = true;
+        trajectory.termination_pid = streamline_binary_id(row[1]);
+        trajectory.Eid = streamline_binary_id(row[2]);
+        trajectory.Sid = streamline_binary_id(row[3]);
+        trajectory.end_reason = static_cast<int>(std::llround(row[4]));
+    }
+
+    inline bool read_next_binary_streamline(std::istream &in,
+                                            BinaryStreamlineTrajectory &trajectory,
+                                            const std::string &filename)
+    {
+        trajectory.clear();
+
+        std::array<double, 7> row;
+        while (read_binary_streamline_row(in, row, filename))
+        {
+            if (binary_streamline_row_is_termination(row))
+            {
+                set_binary_streamline_termination(trajectory, row);
+                return true;
+            }
+
+            append_binary_streamline_sample(trajectory, row);
+        }
+
+        if (!trajectory.samples.empty())
+            throw std::runtime_error("Binary streamline ended before its termination record in: " + filename);
+
+        return false;
+    }
+
+    inline void placeholder_process_binary_streamline(const BinaryStreamlineTrajectory &trajectory)
+    {
+        // Replace this with application-specific processing.
+        (void)trajectory;
+    }
+
+    template <class ProcessTrajectory>
+    inline void process_binary_streamline_file(const std::string &filename,
+                                               ProcessTrajectory process_trajectory)
+    {
+        std::ifstream in(filename, std::ios::binary);
+        if (!in.good())
+            throw std::runtime_error("Could not open binary streamline file: " + filename);
+
+        BinaryStreamlineTrajectory trajectory;
+        while (read_next_binary_streamline(in, trajectory, filename))
+            process_trajectory(trajectory);
+    }
+
+    inline void process_binary_streamline_file_with_placeholder(const std::string &filename)
+    {
+        process_binary_streamline_file(filename, placeholder_process_binary_streamline);
+    }
 
     inline bool is_comment_or_empty(const std::string &line)
     {

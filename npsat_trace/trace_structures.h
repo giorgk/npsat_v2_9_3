@@ -127,6 +127,7 @@ namespace npsat_trace {
     {
         id32_t Eid = 0;
         double x=0, y=0, ztop=0, zbot=0;
+        double radius = 0.0;
         int rt=0, rf=0;
         int nlay=1, n_per_layer=1;
     };

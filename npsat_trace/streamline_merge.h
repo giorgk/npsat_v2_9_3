@@ -99,9 +99,18 @@ namespace npsat_trace
     inline bool streamline_record_less(const StreamlineRecord &a,
                                        const StreamlineRecord &b)
     {
-        if (a.Eid != b.Eid) return a.Eid < b.Eid;
-        if (a.Sid != b.Sid) return a.Sid < b.Sid;
-        if (a.pid != b.pid) return a.pid < b.pid;
+        const std::uint64_t a_eid = integer_key_from_double(a.Eid);
+        const std::uint64_t b_eid = integer_key_from_double(b.Eid);
+        if (a_eid != b_eid) return a_eid < b_eid;
+
+        const std::uint64_t a_sid = integer_key_from_double(a.Sid);
+        const std::uint64_t b_sid = integer_key_from_double(b.Sid);
+        if (a_sid != b_sid) return a_sid < b_sid;
+
+        const std::uint64_t a_pid = integer_key_from_double(a.pid);
+        const std::uint64_t b_pid = integer_key_from_double(b.pid);
+        if (a_pid != b_pid) return a_pid < b_pid;
+
         return static_cast<int>(a.termination) < static_cast<int>(b.termination);
     }
 
@@ -247,9 +256,6 @@ namespace npsat_trace
                                            const bool write_bin,
                                            MPI_Comm mpi_communicator)
     {
-        if (n_proc <= 1)
-            return;
-
         MPI_Barrier(mpi_communicator);
 
         std::vector<StreamlineRecord> records;
