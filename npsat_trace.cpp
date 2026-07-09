@@ -357,9 +357,11 @@ void NPSAT_TRACE<dim>::run() {
 
             // Calculate the step size using the current velocity
             bool is_stuck = false;
+            const Tensor<1,dim> dir = u / vmag;
+            const double directional_cell_width = cached_cell.directional_bbox_width(dir);
             // find the step size
             npsat_trace::TimeStepControl tsc; //TODO make this user parameter
-            const double ds = npsat_trace::compute_step_size_ds<dim>(current_cell->diameter(),
+            const double ds = npsat_trace::compute_step_size_ds<dim>(directional_cell_width,
                                                         vmag, dt_remaining, time_step_size, tsc,is_stuck);
 
             if (is_stuck) {
@@ -378,7 +380,6 @@ void NPSAT_TRACE<dim>::run() {
             }
 
             // move the particle
-            const Tensor<1,dim> dir = u / vmag;
             const Point<dim> x_proposed = x + ds * dir * topt.sim_opt.direction;
             const double dt_move = ds / vmag;
 

@@ -5,7 +5,9 @@
 #ifndef CACHED_VELOCITY_H
 #define CACHED_VELOCITY_H
 
+#include <cmath>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -173,6 +175,7 @@ namespace npsat_trace {
         void clear();
         void get_clamped_ref_coords(const Point<dim> &p, Point<dim> &p_ref);
         void compute_velocity_at_particle(const Point<dim> &x_ref, Tensor<1,dim> &u_phys, double &vmag_out) const;
+        double directional_bbox_width(const Tensor<1,dim> &direction) const;
 
 
     private:
@@ -216,6 +219,8 @@ namespace npsat_trace {
         std::array<SubcellRT0Data, 8> subcells{};
         std::array<double, 4> xv{}, yv{};
         std::array<double, 4> zb{}, zt{};
+        Point<dim> bbox_min;
+        Point<dim> bbox_max;
 
         static constexpr unsigned int perm_ccw[4] = {0, 1, 3, 2};
         const unsigned int f_bot = 4; // -z
@@ -245,6 +250,22 @@ namespace npsat_trace {
         AssertThrow(cell->is_locally_owned(), dealii::ExcMessage("Expected locally owned cell."));
 
         //const unsigned int slot = static_cast<unsigned int>(cell->user_index());
+
+        for (unsigned int d = 0; d < dim; ++d)
+        {
+            bbox_min[d] = std::numeric_limits<double>::max();
+            bbox_max[d] = -std::numeric_limits<double>::max();
+        }
+
+        for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_cell; ++v)
+        {
+            const Point<dim> p = cell->vertex(v);
+            for (unsigned int d = 0; d < dim; ++d)
+            {
+                bbox_min[d] = std::min(bbox_min[d], p[d]);
+                bbox_max[d] = std::max(bbox_max[d], p[d]);
+            }
+        }
 
         // Step 1: build canonical 2x2 face-subface values for all 6 parent faces
         for (unsigned int f=0; f<GeometryInfo<dim>::faces_per_cell; ++f) {
@@ -1050,6 +1071,25 @@ namespace npsat_trace {
         vmag_out = u_phys.norm();
     }
 
+    template<int dim>
+    double CellVelocityCacheRT0Split3D<dim>::directional_bbox_width(const Tensor<1,dim> &direction) const {
+        const double direction_norm = direction.norm();
+        AssertThrow(direction_norm > 0.0,
+                    dealii::ExcMessage("Cannot compute directional cell width for a zero direction."));
+
+        const Tensor<1,dim> unit_direction = direction / direction_norm;
+
+        double width = 0.0;
+        for (unsigned int d = 0; d < dim; ++d)
+        {
+            const double extent = bbox_max[d] - bbox_min[d];
+            AssertThrow(extent >= 0.0, dealii::ExcMessage("Invalid cached cell bounding box."));
+            width += std::abs(unit_direction[d]) * extent;
+        }
+
+        return width;
+    }
+
     /**
      * Interpolate the split RT0 velocity at a parent-cell reference point.
      *
@@ -1208,6 +1248,8 @@ namespace npsat_trace {
         yv = std::array<double, 4>();
         zb = std::array<double, 4>();
         zt = std::array<double, 4>();
+        bbox_min = Point<dim>();
+        bbox_max = Point<dim>();
 
         cache_bilinear_coefficients = false;
         bilinear_coefficients.reset();

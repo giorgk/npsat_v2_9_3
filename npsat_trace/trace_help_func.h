@@ -392,13 +392,14 @@ namespace npsat_trace {
     }
 
     template <int dim>
-    static double compute_step_size_ds(const double diameter, const double vmag, const double dt_remaining,
+    static double compute_step_size_ds(const double directional_cell_width, const double vmag, const double dt_remaining,
         const double delta_time, const TimeStepControl tsc, bool &is_stuck_out) {
-        AssertThrow(diameter > 0.0, dealii::ExcMessage("Cell diameter() is zero."));
+        AssertThrow(directional_cell_width > 0.0,
+                    dealii::ExcMessage("Directional cell bounding-box width is zero."));
 
         // distance constraints
         const double ds1 = tsc.max_step;
-        const double ds2 = diameter / std::max(1u, tsc.n_steps_per_cell);
+        const double ds2 = directional_cell_width / std::max(1u, tsc.n_steps_per_cell);
 
         // time constraints converted to distance
         const double ds3 = vmag * tsc.max_step_time;
@@ -410,7 +411,7 @@ namespace npsat_trace {
         ds = std::min(ds, vmag * dt_remaining);
 
         // stuck detection threshold (scale with cell size)
-        const double ds_min = 1e-14 * std::max(diameter, 1.0);
+        const double ds_min = 1e-14 * std::max(directional_cell_width, 1.0);
         is_stuck_out = (ds < ds_min);
 
         return ds;
