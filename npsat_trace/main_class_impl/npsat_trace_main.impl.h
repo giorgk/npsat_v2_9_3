@@ -53,14 +53,14 @@ void NPSAT_TRACE<dim>::distribute_particles(const std::vector<npsat_trace::Parti
     particle_handler.sort_particles_into_subdomains_and_cells();
 
     const unsigned int n_local_particles = particle_handler.n_locally_owned_particles();
-    for (unsigned int r = 0; r < n_proc; ++r)
+    /*for (unsigned int r = 0; r < n_proc; ++r)
     {
         MPI_Barrier(mpi_communicator);
         std::cout << "Rank " << my_rank
                   << " owns " << n_local_particles
                   << " particles." << std::endl;
         MPI_Barrier(mpi_communicator);
-    }
+    }*/
 
 }
 

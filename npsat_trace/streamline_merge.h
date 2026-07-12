@@ -33,6 +33,19 @@ namespace npsat_trace
         int end_reason = 0;
     };
 
+    // Reusable temporary file written by each MPI rank.
+    // The file is overwritten at the beginning of every particle iteration.
+    inline std::string temporary_rank_base_name(const std::string &prefix,
+                                                const unsigned int rank)
+    {
+        std::ostringstream ss;
+        ss << prefix
+           << "_streamlines_tmp_rank_"
+           << std::setw(4) << std::setfill('0') << rank;
+        return ss.str();
+    }
+
+
     inline std::string rank_iter_base_name(const std::string &prefix,
                                            const unsigned int rank,
                                            const unsigned int iter)
@@ -263,7 +276,8 @@ namespace npsat_trace
 
         for (unsigned int rank = 0; rank < n_proc; ++rank)
         {
-            const std::string input_base = rank_iter_base_name(prefix, rank, iter);
+            //const std::string input_base = rank_iter_base_name(prefix, rank, iter);
+            const std::string input_base = temporary_rank_base_name(prefix, rank);
             if (read_binary)
                 read_streamline_records_binary(input_base + ".bin", my_rank, n_proc, records);
             else

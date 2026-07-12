@@ -98,6 +98,7 @@ namespace npsat_trace {
         er_well_captured    = 12,
         er_well_mass_balance = 13,
         er_nonexpanding     = 14,
+        er_max_proc_exchanges = 15,
     };
 
     struct CellWellLink{

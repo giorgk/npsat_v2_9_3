@@ -23,7 +23,7 @@ void NPSAT_TRACE<dim>::load_triangulation() {
     MPI_Barrier(mpi_communicator);
 
     // Collective operation on all MPI ranks.
-    std::cout << dist_base << std::endl;
+    //std::cout << dist_base << std::endl;
     triangulation.load(dist_base.c_str(), false);
     MPI_Barrier(mpi_communicator);
 

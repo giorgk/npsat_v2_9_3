@@ -1,6 +1,8 @@
 
 #include <iostream>
 #include <unordered_map>
+#include <chrono>
+#include <iomanip>
 
 #include <deal.II/base/mpi.h>
 #include <deal.II/distributed/tria.h>
@@ -113,7 +115,7 @@ NPSAT_TRACE<dim>::NPSAT_TRACE(const npsat_trace::Trace_options &topt_in)
 
 template <int dim>
 void NPSAT_TRACE<dim>::run() {
-  std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
+  //std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
 
   load_triangulation();
   if (topt.exit_after_load_tria)
@@ -149,13 +151,31 @@ void NPSAT_TRACE<dim>::run() {
 
     distribute_particles(seeds0);
 
-    pcout << "Iteration " << iter << std::endl;
+    const unsigned int chunk_local = particle_handler.n_locally_owned_particles();
+
+    const unsigned int chunk_global = Utilities::MPI::sum(chunk_local, mpi_communicator);
+
+    pcout << "\n"
+          << "============================================================\n"
+          << "  PARTICLE CHUNK ITERATION " << iter << "\n"
+          << "  Initial particles: " << chunk_global << "\n"
+          << "  Transient time steps per cycle: " << N_time_steps << "\n"
+          << "============================================================"
+          << std::endl;
+
+    const auto iteration_start = std::chrono::steady_clock::now();
+    auto last_progress_print = iteration_start;
+
+    unsigned long long completed_time_steps = 0;
+
+
     // ------------------------------------------------------------
     // Prepare per-rank output file for this iter
     // ------------------------------------------------------------
     const std::string rank_str = Utilities::int_to_string(my_rank, 4);
     const std::string iter_str = Utilities::int_to_string(iter, 4);
-    const std::string output_base = topt.output_prefix + "_streamlines_rank_" + rank_str + "_iter_" + iter_str;
+    //const std::string output_base = topt.output_prefix + "_streamlines_rank_" + rank_str + "_iter_" + iter_str;
+    const std::string output_base = npsat_trace::temporary_rank_base_name(topt.output_prefix, my_rank);
     npsat_trace::StreamlineOutput sl_out(output_base, topt.write_ascii, topt.write_bin);
 
     // ---------------------------
@@ -531,9 +551,56 @@ void NPSAT_TRACE<dim>::run() {
         // --------------------------------------------------------
         particle_handler.sort_particles_into_subdomains_and_cells();
 
-        AssertThrow(++exchange_iter < static_cast<unsigned int>(topt.sim_opt.n_max_proc_exchanges),
-            ExcMessage("Exceeded max exchange iterations in step " +
-                       std::to_string(step) + "."));
+        ++exchange_iter;
+
+        const unsigned int max_proc_exchanges = static_cast<unsigned int>(std::max(1, topt.sim_opt.n_max_proc_exchanges));
+
+        if (exchange_iter >= max_proc_exchanges){
+          unsigned int terminated_local = 0;
+
+          for (auto p = particle_handler.begin(); p != particle_handler.end(); ++p){
+            auto props = p->get_properties();
+
+            // Terminate only particles that have not completed the
+            // current transient time step.
+            if (props[npsat_trace::pState] == 1.0 && props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps){
+              npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], props[npsat_trace::pEid],
+                props[npsat_trace::pSid], npsat_trace::er_max_proc_exchanges);
+
+              props[npsat_trace::pState]       = -1.0;
+              props[npsat_trace::pDtRemaining] = 0.0;
+              ++terminated_local;
+            }
+          }
+
+          const unsigned int terminated_global = Utilities::MPI::sum(terminated_local, mpi_communicator);
+
+          pcout << "WARNING: time step " << step
+                << " reached the processor-exchange limit ("
+                << max_proc_exchanges << "). Terminating "
+                << terminated_global
+                << " unfinished streamline(s)."
+                << std::endl;
+
+          // Remove the newly terminated particles before leaving this
+          // loop. Otherwise the next time step will reactivate them.
+          bool removed_any = true;
+          while (removed_any){
+            removed_any = false;
+
+            for (auto p = particle_handler.begin(); p != particle_handler.end(); ++p){
+              auto props = p->get_properties();
+
+              if (props[npsat_trace::pState] == -1.0){
+                particle_handler.remove_particle(p);
+                removed_any = true;
+                break;
+              }
+            }
+          }
+          break;
+        }
+
 
       }// While loop until all particles terminate within this step
 
@@ -542,6 +609,44 @@ void NPSAT_TRACE<dim>::run() {
       // ------------------------------------------------------------
       const unsigned int n_local  = particle_handler.n_locally_owned_particles();
       const unsigned int n_global = Utilities::MPI::sum(n_local, mpi_communicator);
+
+      ++completed_time_steps;
+      const auto now = std::chrono::steady_clock::now();
+      const long long seconds_since_print = std::chrono::duration_cast<std::chrono::seconds>(now - last_progress_print).count();
+      const std::chrono::seconds progress_interval(15);
+      if ((now - last_progress_print) >= progress_interval || n_global == 0) {
+        const double percent_finished =
+      (chunk_global > 0)
+          ? 100.0 * static_cast<double>(chunk_global - n_global) /
+                static_cast<double>(chunk_global)
+          : 100.0;
+
+        const unsigned long long cycle =
+            completed_time_steps / N_time_steps;
+
+        const unsigned int position_in_cycle =
+            static_cast<unsigned int>(
+                completed_time_steps % N_time_steps);
+
+        const auto elapsed_seconds =
+            std::chrono::duration_cast<std::chrono::seconds>(
+                now - iteration_start).count();
+
+        pcout << "  [iteration " << iter
+              << " | elapsed " << elapsed_seconds << " s"
+              << " | cycle " << cycle
+              << " | time step " << step
+              << " (" << position_in_cycle << "/" << N_time_steps << ")"
+              << " | active " << n_global << "/" << chunk_global
+              << " | finished " << std::fixed << std::setprecision(1)
+              << percent_finished << "%"
+              << " | exchanges " << exchange_iter
+              << "]"
+              << std::defaultfloat
+              << std::endl;
+
+        last_progress_print = now;
+      }
 
       if (n_global == 0) {
         break;
@@ -553,6 +658,20 @@ void NPSAT_TRACE<dim>::run() {
         step = (step + N_time_steps - 1) % N_time_steps;
     }// while loop over time steps
     sl_out.close();
+
+    const auto iteration_end = std::chrono::steady_clock::now();
+    const auto iteration_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            iteration_end - iteration_start).count();
+
+    pcout << "------------------------------------------------------------\n"
+          << "  COMPLETED PARTICLE CHUNK ITERATION " << iter << "\n"
+          << "  Particles processed: " << chunk_global << "\n"
+          << "  Time-step passes: " << completed_time_steps << "\n"
+          << "  Elapsed time: " << iteration_seconds << " s\n"
+          << "------------------------------------------------------------"
+          << std::endl;
+
     npsat_trace::merge_streamline_iteration(topt.output_prefix,
                                             static_cast<unsigned int>(iter),
                                             n_proc,
