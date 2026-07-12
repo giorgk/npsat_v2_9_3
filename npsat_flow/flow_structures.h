@@ -100,6 +100,9 @@ namespace npsat_flow {
         double       recharge_drying_saturated_fraction = 5.0e-3;
         double       recharge_wetting_saturated_fraction = 5.0e-2;
         double       recharge_min_relative_k = 1.0e-4;
+        double anderson_beta = 0.7;
+        double anderson_max_alpha = 5.0;
+        double anderson_max_step_factor = 2.0;
         RechargeStabilizationMode recharge_stabilization_mode =
             RechargeStabilizationMode::EffectiveTop;
         EffectiveTopMode effective_top_mode = EffectiveTopMode::RechargeReceivers;

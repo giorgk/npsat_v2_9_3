@@ -1010,7 +1010,7 @@ void NPSAT_FLOW<dim>::identify_top_active_cells(std::vector<unsigned char> &rech
 
             recharge_receiver[slot] = 1;
             receiver_recharge_area[slot] += request.source_area;
-            receiver_effective_z_top[slot] = cell_data.h_e;
+            receiver_effective_z_top[slot] = std::max(cell_data.h_e, cell_data.z_top - 0.1 * cell_data.thickness); //cell_data.h_e;
             current_recharge_receiver_gids.insert(request.cell_gid);
             return;
         }
@@ -1270,7 +1270,9 @@ void NPSAT_FLOW<dim>::compute_cell_r_and_storage(npsat_flow::CellNonlinearData &
     const double w_top = npsat_flow::logistic_sigma((out.z_top - out.h_e) / epsS);
     const double w = w_bot * w_top;
 
+
     out.S_eff = S_conf_vol + w * S_unconf_vol;
+    //out.S_eff = Ss;
 }
 
 template <int dim>

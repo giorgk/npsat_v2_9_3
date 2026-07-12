@@ -145,6 +145,9 @@ namespace npsat_flow {
             ("Nonlinear.AndersonStart", po::value<unsigned int>()->default_value(2), "Nonlinear iteration to start Anderson acceleration")
             ("Nonlinear.AndersonM", po::value<unsigned int>()->default_value(5), "Anderson acceleration memory depth")
             ("Nonlinear.AndersonReg", po::value<double>()->default_value(1e-11), "Anderson least-squares regularization")
+            ("Nonlinear.AndersonBeta", po::value<double>()->default_value(0.7), "Damping factor applied to the Anderson correction (0 < beta <= 1).")
+            ("Nonlinear.AndersonMaxAlpha", po::value<double>()->default_value(5.0), "Maximum allowed absolute Anderson coefficient before rejecting the accelerated step.")
+            ("Nonlinear.AndersonMaxStepFactor", po::value<double>()->default_value(2.0), "Reject Anderson step if its L2 norm exceeds this multiple of the damped Picard step.")
             ("Nonlinear.CarryHistoryAcrossTimesteps", po::value<int>()->default_value(0), "Carry Anderson history across time steps")
             ("Nonlinear.RechargeStabilizationMode", po::value<std::string>()->default_value("effective_top"), "Recharge stabilization mode: hysteresis_only or effective_top")
             ("Nonlinear.UseRechargeHysteresis", po::value<int>()->default_value(1), "Use hysteresis for recharge receiver wet/dry switching")
@@ -297,6 +300,9 @@ namespace npsat_flow {
                     uo.NLC.anderson_start = vm_cfg["Nonlinear.AndersonStart"].as<unsigned int>();
                     uo.NLC.anderson_m = vm_cfg["Nonlinear.AndersonM"].as<unsigned int>();
                     uo.NLC.anderson_reg = vm_cfg["Nonlinear.AndersonReg"].as<double>();
+                    uo.NLC.anderson_beta = vm_cfg["Nonlinear.AndersonBeta"].as<double>();
+                    uo.NLC.anderson_max_alpha = vm_cfg["Nonlinear.AndersonMaxAlpha"].as<double>();
+                    uo.NLC.anderson_max_step_factor = vm_cfg["Nonlinear.AndersonMaxStepFactor"].as<double>();
                     uo.NLC.carry_history_across_timesteps = vm_cfg["Nonlinear.CarryHistoryAcrossTimesteps"].as<int>() == 1;
                     //uo.NLC.recharge_stabilization_mode = parse_recharge_stabilization_mode(vm_cfg["Nonlinear.RechargeStabilizationMode"].as<std::string>());
                     uo.NLC.use_recharge_hysteresis = vm_cfg["Nonlinear.UseRechargeHysteresis"].as<int>() == 1;

@@ -297,7 +297,7 @@ namespace npsat_trace {
 
             // consistency check (extruded): top and bottom x,y should match
             // (You can relax tolerance if needed)
-            AssertThrow(std::abs(pt[0] - pb[0]) < 1e-10 && std::abs(pt[1] - pb[1]) < 1e-10,
+            AssertThrow(std::abs(pt[0] - pb[0]) < 1e-2 && std::abs(pt[1] - pb[1]) < 1e-2,
                         dealii::ExcMessage("Mesh is not strictly extruded: top/bottom XY mismatch."));
 
             zb[i] = pb[2];

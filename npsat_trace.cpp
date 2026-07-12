@@ -149,7 +149,7 @@ void NPSAT_TRACE<dim>::run() {
 
     distribute_particles(seeds0);
 
-
+    pcout << "Iteration " << iter << std::endl;
     // ------------------------------------------------------------
     // Prepare per-rank output file for this iter
     // ------------------------------------------------------------
@@ -542,6 +542,7 @@ void NPSAT_TRACE<dim>::run() {
       // ------------------------------------------------------------
       const unsigned int n_local  = particle_handler.n_locally_owned_particles();
       const unsigned int n_global = Utilities::MPI::sum(n_local, mpi_communicator);
+
       if (n_global == 0) {
         break;
       }

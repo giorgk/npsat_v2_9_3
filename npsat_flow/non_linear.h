@@ -27,7 +27,7 @@ namespace npsat_flow{
 
     struct RelativeKParams
     {
-        double r_min     = 1e-8;   // residual floor
+        double r_min     = 0.1;//1e-8;   // residual floor
         double eps       = 0.05;   // smoothing length [L] (e.g. fraction of layer thickness)
         double power_p   = 2.0;    // for PowerSigmoid
     };

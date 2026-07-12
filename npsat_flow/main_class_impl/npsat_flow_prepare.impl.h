@@ -22,11 +22,13 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   pcout << "Reading data..." << std::endl;
 
   {// Time step
+    pcout << "\tTime step..." << std::endl;
     time_tracking.read_delta_time_file(npsat_flow::resolve_relative_path(input_root, uo.sim_opt.delta_time_file));
     time_tracking.initialize(uo.sim_opt.n_steps,uo.sim_opt.Start_step);
   }
 
   {// Set up recharge
+    pcout << "\tRecharge..." << std::endl;
     auto rch_interp = std::make_shared<npsat_flow::InterpInterface<dim>>();
     if (!uo.sources.rch_file.empty())
     {
@@ -43,6 +45,7 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   }
 
   {// Set up hydrogeology data
+    pcout << "\tHydrogeology..." << std::endl;
     hgeo_prop.read(uo, mpi_communicator);
   }
 
@@ -50,6 +53,7 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
     streams.stream_multiplier = uo.sources.stream_factor;
     if (!uo.sources.stream_file.empty() && !uo.sources.stream_rates_file.empty())
     {
+      pcout << "\tStreams..." << std::endl;
       streams.read_streams(npsat_flow::resolve_relative_path(input_root, uo.sources.stream_file),
                            npsat_flow::resolve_relative_path(input_root, uo.sources.stream_rates_file),
                            mpi_communicator);
@@ -64,6 +68,7 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   {// Wells
     if (!uo.sources.well_file.empty())
     {
+      pcout << "\tWells..." << std::endl;
       npsat_flow::rank0_read_wells_distributes(npsat_flow::resolve_relative_path(input_root, uo.sources.well_file),
                                              mnwells,
                                              mpi_communicator);
@@ -94,6 +99,7 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
 
   {// Dirichlet boundary conditions
     if (!uo.bndr_cond.dirichlet_file.empty()) {
+      pcout << "\tDirichlet BC..." << std::endl;
       dirichlet_bc.set_lateral_matching_tolerances(uo.bndr_cond.half_with, uo.bndr_cond.min_overlap);
 
       dirichlet_bc.read_data(uo.bndr_cond.dirichlet_file,
@@ -113,6 +119,7 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   {// GHB boundary conditions
     if (!uo.bndr_cond.ghb_file.empty())
     {
+      pcout << "\tGHB BC..." << std::endl;
       ghb_bc.set_lateral_matching_tolerances(uo.bndr_cond.half_with, uo.bndr_cond.min_overlap);
 
       ghb_bc.read_data(uo.bndr_cond.ghb_file,

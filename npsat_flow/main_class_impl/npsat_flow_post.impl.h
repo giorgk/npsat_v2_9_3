@@ -337,53 +337,41 @@ bool NPSAT_FLOW<dim>::check_nonlinear_convergence(const double update_norm, cons
 template <int dim>
 bool NPSAT_FLOW<dim>::anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel,
                                     const TrilinosWrappers::MPI::Vector &x_k,
-                                    const TrilinosWrappers::MPI::Vector &G_xk,
+                                    const TrilinosWrappers::MPI::Vector &H_xk,
                                     npsat_flow::NonlinearState &nl_state,
                                     const npsat_flow::NonlinearControls &ctl) const{
 
     AssertThrow(ctl.anderson_m >= 1, ExcMessage("Anderson memory depth must be >= 1."));
 
-    // Ensure output has correct layout
-    x_accel = G_xk;
+    // H(xk) already contains damping.
+    x_accel = H_xk;
 
-    // f_k = G(x_k) - x_k
-    TrilinosWrappers::MPI::Vector f_k = G_xk;
-    f_k -= x_k;
+    // Need enough history
+    const std::size_t L = nl_state.x_hist.size();
 
-    // -------------------------
-    // (1) Always update history
-    // -------------------------
-    nl_state.x_hist.push_back(x_k);
-    nl_state.f_hist.push_back(f_k);
-
-    // Keep at most (m+1) items so we can form m deltas
-    const std::size_t max_keep = static_cast<std::size_t>(ctl.anderson_m) + 1;
-    while (nl_state.x_hist.size() > max_keep)
-        nl_state.x_hist.pop_front();
-    while (nl_state.f_hist.size() > max_keep)
-        nl_state.f_hist.pop_front();
-
-    // ---------------------------------------------
-    // (2) Skip AA usage until we reach anderson_start
-    //     BUT keep the stored history above.
-    // ---------------------------------------------
     if (nl_state.nl_iter < ctl.anderson_start)
         return false;
 
-    // Need at least two history entries to form one delta.
-    const std::size_t L = nl_state.x_hist.size();
     if (L < 2)
-        return false; // not enough to form a single delta
+        return false;
 
-    const unsigned int m_used = std::min<unsigned int>(ctl.anderson_m, static_cast<unsigned int>(L - 1));
+    const unsigned int m_used = std::min<unsigned int>(ctl.anderson_m,static_cast<unsigned int>(L - 1));
 
     if (m_used == 0)
         return false;
 
-    // Build delta vectors for the last m_used steps:
-    // Use the most recent (m_used) deltas ending at the latest entry.
+    //---------------------------------------------------
+    // Current residual
+    //---------------------------------------------------
+    TrilinosWrappers::MPI::Vector f_k = H_xk;
+    f_k -= x_k;
+
+    //---------------------------------------------------
+    // Build Δx and Δf
+    //---------------------------------------------------
     std::vector<TrilinosWrappers::MPI::Vector> dx(m_used);
     std::vector<TrilinosWrappers::MPI::Vector> df(m_used);
+
 
     // Indices in deque: [0 ... L-1], latest is L-1
     // We want deltas for pairs: (L-m_used-1 -> L-m_used), ..., (L-2 -> L-1)
@@ -401,47 +389,109 @@ bool NPSAT_FLOW<dim>::anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel
         df[i] -= nl_state.f_hist[j0];
     }
 
+    //---------------------------------------------------
+    // Least squares
+    //---------------------------------------------------
     // Assemble normal equations: (Df^T Df + reg I) alpha = Df^T f_k
     LAPACKFullMatrix<double> A(m_used, m_used);
-    Vector<double> b(m_used);
+    Vector<double> alpha(m_used);
 
-    for (unsigned int i = 0; i < m_used; ++i)
-    {
-        // RHS: <df_i, f_k>
-        b[i] = df[i] * f_k;
+    for (unsigned int i=0;i<m_used;++i){
+        alpha[i] = df[i] * f_k;
 
-        for (unsigned int j = 0; j < m_used; ++j)
-            A(i, j) = df[i] * df[j];
+        for (unsigned int j=0;j<m_used;++j)
+            A(i,j)=df[i]*df[j];
     }
 
     // Regularization (helps when columns nearly dependent)
     const double reg = std::max(ctl.anderson_reg, 0.0);
-    if (reg > 0.0)
-        for (unsigned int i = 0; i < m_used; ++i)
-            A(i, i) += reg;
+
+    for (unsigned int i=0;i<m_used;++i)
+        A(i,i)+=reg;
 
     // Solve for alpha
     try
     {
         A.compute_lu_factorization();
-        A.solve(b); // b becomes alpha
+        A.solve(alpha); // b becomes alpha
     }
     catch (...)
     {
         return false;
     }
 
-    // Sanity check on alpha values
-    for (unsigned int i = 0; i < m_used; ++i)
-        if (!std::isfinite(b[i]))
+    //---------------------------------------------------
+    // Reject pathological coefficients
+    //---------------------------------------------------
+    double max_alpha = 0.0;
+
+    for (unsigned int i=0;i<m_used;++i)
+    {
+        if (!std::isfinite(alpha[i]))
             return false;
 
-    // Form accelerated iterate: x_accel = G_xk - sum_i alpha_i * dx_i
-    // (Recall x_accel currently equals G_xk)
-    for (unsigned int i = 0; i < m_used; ++i)
-        x_accel.add(-b[i], dx[i]);
+        max_alpha = std::max(max_alpha,
+                             std::fabs(alpha[i]));
+    }
+
+    if (max_alpha > ctl.anderson_max_alpha)
+        return false;
+
+    //---------------------------------------------------
+    // Form accelerated iterate
+    //---------------------------------------------------
+    const double beta = ctl.anderson_beta;
+
+    for (unsigned int i=0;i<m_used;++i)
+        x_accel.add(-beta*alpha[i],dx[i]);
+
+    //---------------------------------------------------
+    // Reject huge extrapolations
+    //---------------------------------------------------
+    TrilinosWrappers::MPI::Vector aa_step=x_accel;
+    aa_step-=x_k;
+
+    TrilinosWrappers::MPI::Vector picard_step=H_xk;
+    picard_step-=x_k;
+
+    if (aa_step.l2_norm() > ctl.anderson_max_step_factor * picard_step.l2_norm())
+        return false;
 
     return true;
+}
+
+template <int dim>
+void NPSAT_FLOW<dim>::update_anderson_history(
+        const TrilinosWrappers::MPI::Vector &x_old,
+        const TrilinosWrappers::MPI::Vector &x_new,
+        npsat_flow::NonlinearState &nl_state,
+        const npsat_flow::NonlinearControls &ctl) const {
+    //---------------------------------------------------
+    // residual = x_new - x_old
+    //---------------------------------------------------
+
+    TrilinosWrappers::MPI::Vector f=x_new;
+    f-=x_old;
+
+    nl_state.x_hist.push_back(x_new);
+    nl_state.f_hist.push_back(f);
+
+    const std::size_t keep =
+        static_cast<std::size_t>(ctl.anderson_m)+1;
+
+    while(nl_state.x_hist.size()>keep)
+        nl_state.x_hist.pop_front();
+
+    while(nl_state.f_hist.size()>keep)
+        nl_state.f_hist.pop_front();
+}
+
+template<int dim>
+void NPSAT_FLOW<dim>::clear_anderson_history(
+        npsat_flow::NonlinearState &nl_state) const
+{
+    nl_state.x_hist.clear();
+    nl_state.f_hist.clear();
 }
 
 template <int dim>

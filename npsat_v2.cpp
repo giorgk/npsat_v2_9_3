@@ -113,6 +113,11 @@ private:
                                      const TrilinosWrappers::MPI::Vector &G_xk,
                                      npsat_flow::NonlinearState &nl_state,
                                      const npsat_flow::NonlinearControls &ctl) const;
+  void update_anderson_history( const TrilinosWrappers::MPI::Vector &x_old,
+                                const TrilinosWrappers::MPI::Vector &x_new,
+                                npsat_flow::NonlinearState &nl_state,
+                                const npsat_flow::NonlinearControls &ctl) const;
+  void clear_anderson_history(npsat_flow::NonlinearState &nl_state) const;
   void apply_damped_update(TrilinosWrappers::MPI::Vector &h_guess,
                                      const TrilinosWrappers::MPI::Vector &h_candidate,
                                      const double omega) const;
@@ -357,40 +362,45 @@ void NPSAT_FLOW<dim>::run() {
           break;
         }
 
-        // Choose the target we want to move toward:
-        const TrilinosWrappers::MPI::Vector *target = &h_new;
+        // ----------------------------------------------------
+        // First build the damped Picard iterate.
+        // This is the actual nonlinear fixed-point map H(x).
+        // ----------------------------------------------------
+        TrilinosWrappers::MPI::Vector h_picard = h_guess;
+        apply_damped_update(h_picard, h_new, uo.NLC.damping_omega);
 
-        // (7) Update the iterate vector x = (lambda, well) and apply Anderson (optional)
-        //     Define x_k from current accepted solution state, and G(x_k) from raw output.
-        //     The map G here is: x_k -> (solve with coeffs from h_guess) -> x_sol.
-        //
-        //     Practically: you can define x_k as the block_solution from the previous
-        //     nonlinear iteration, and G_xk as the current block_solution.
-        //
-        //     For the first iteration, you can skip AA (no history).
+        const TrilinosWrappers::MPI::Vector *accepted=&h_picard;
 
-        // Build x_k and G_xk as block vectors (lambda, well_heads)
-        // x_k   = previous accepted iterate (store it)
-        // G_xk  = current raw solution (block_solution)
-        // Then AA provides x_accel.
+        // ----------------------------------------------------
+        // Accelerate the damped map instead of the raw Picard map
+        // ----------------------------------------------------
         bool aa_ok = false;
         if (uo.NLC.use_anderson)
         {
           aa_ok = anderson_accelerate(
                       h_accel_owned,
                       /*x_k=*/h_guess,
-                      /*G_xk=*/h_new,
+                      /*G_xk=*/h_picard,
                       nl_state,
                       uo.NLC);
-        }
-        if (aa_ok)
-        {
-          pcout << "  Anderson acceleration accepted at NL iter "
-                << nl_state.nl_iter << std::endl;
-          target = &h_accel_owned;
+
+          if (aa_ok)
+          {
+            accepted=&h_accel_owned;
+            pcout << "  Anderson acceleration accepted at NL iter " << nl_state.nl_iter << std::endl;
+          }
         }
 
-        apply_damped_update(h_guess, *target, uo.NLC.damping_omega);
+        if (!aa_ok && uo.NLC.use_anderson)
+        {
+          clear_anderson_history(nl_state);
+        }
+
+        update_anderson_history(h_guess, *accepted, nl_state, uo.NLC);
+
+        //apply_damped_update(h_guess, *target, uo.NLC.damping_omega);
+        // Accept the chosen iterate.
+        h_guess = *accepted;
         //break;
       }
     }
