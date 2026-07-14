@@ -106,6 +106,85 @@ This is continuous but piecewise linear, with kinks at screen endpoints. It chan
 
 `dry_wells_zeroed=0` only says that no whole well is completely dry. It does not rule out large changes in partially wetted links.
 
+### 1.5 Effective-top modes
+
+`Nonlinear.EffectiveTopMode` accepts three values:
+
+```ini
+Nonlinear.EffectiveTopMode = off
+Nonlinear.EffectiveTopMode = recharge_receivers
+Nonlinear.EffectiveTopMode = all_water_table_cells
+```
+
+The effective top is an assembly elevation used to decide how long the unconfined specific-yield storage window remains active. It represents the idea that a top or water-table cell can extend vertically to the current water table instead of becoming confined as soon as the head reaches the geometric cell top.
+
+The conductivity and storage effects must be distinguished:
+
+* Top-layer conductivity uses the physical water column over the **geometric** cell thickness. Consequently, `r` can exceed one when `h > z_top`. This represents the additional transmissive thickness above the geometric top and applies independently of `EffectiveTopMode`.
+* The effective top changes the upper logistic storage window through `assembly_z_top`. It can therefore retain a specific-yield contribution where using the geometric top would cause the cell to behave as confined storage.
+* The dry, partially saturated, and fully saturated flags continue to use the geometric cell bottom and top. Effective top does not reclassify the physical cell.
+* Recharge routing still occurs when effective-top mode is disabled. Recharge hysteresis and effective-top storage stabilization are separate mechanisms.
+
+The three modes differ as follows.
+
+#### `off`
+
+No cell receives an effective top:
+
+```text
+assembly_z_top = geometric z_top
+```
+
+The specific-yield window is therefore controlled entirely by the geometric cell. Once head rises above the geometric top, the upper logistic factor decreases toward zero and storage approaches confined compressive storage. Top-layer transmissivity can still increase through `r > 1`.
+
+This mode provides the least storage stabilization and most closely follows the geometric mesh. It is useful as a reference case and for determining whether effective-top storage is contributing to an oscillation. It may be more sensitive when the water table repeatedly crosses the top of a cell.
+
+#### `recharge_receivers`
+
+Only cells selected to receive routed recharge are assigned an effective top. For an accepted receiver, the current code uses
+
+```text
+assembly_z_top = max(h, z_top - 0.1 b),
+```
+
+where `b` is the geometric cell thickness. All other cells retain their geometric top.
+
+This is the default and most localized stabilization. It keeps the unconfined storage treatment tied to cells through which recharge enters the saturated system, while avoiding changes to every water-table cell. It is less intrusive than `all_water_table_cells`, but the effective-top set can change if recharge moves to another receiver. Recharge hysteresis is therefore important: without a stable receiver set, storage treatment can move between cells and contribute to nonlinear oscillation.
+
+For a receiver with head above or close to its geometric top, `assembly_z_top` follows the head or remains near the upper part of the cell. If `assembly_z_top == h`, the upper logistic storage factor is at the center of its smooth transition. The smoothing thickness `eps` controls how rapidly the specific-yield contribution changes around that point.
+
+One subtlety is that `z_top - 0.1 b` is below the geometric top. For a receiver whose head lies lower than that elevation, the selected assembly top is therefore lower than the geometric top rather than an extension above it. This shortens the storage window and may not match the conceptual meaning of “extending the cell to the water table.” The before/after `assembly_z_top` and `S_eff` values should be checked in the detailed log, and this lower bound should be reviewed if receiver cells at low saturation are common.
+
+#### `all_water_table_cells`
+
+Recharge receivers receive the same treatment described above. In addition, every geometric water-table cell can receive an effective top. For a non-receiver water-table cell, the code selects
+
+```text
+assembly_z_top = h
+```
+
+provided the cell contains water above its bottom and is either partially saturated or is a top-layer water-table cell.
+
+This is the broadest effective-top treatment. It makes unconfined storage behavior less dependent on whether a cell happens to be a recharge receiver and is useful when the water table extends through areas with little or zero recharge. It can reduce artificial confined behavior along the water-table surface, but it also makes storage coefficients head-dependent in more cells. That larger nonlinear region may improve physical consistency while increasing the work required by Picard or Anderson iteration.
+
+#### Interaction with `RechargeStabilizationMode`
+
+`Nonlinear.RechargeStabilizationMode = hysteresis_only` forces effective-top behavior off, regardless of the `EffectiveTopMode` value. In that case recharge-receiver hysteresis remains active, but every cell uses its geometric top for storage. To use either `recharge_receivers` or `all_water_table_cells`, the recharge stabilization mode must be
+
+```ini
+Nonlinear.RechargeStabilizationMode = effective_top
+```
+
+#### Comparison
+
+| Effective-top mode | Cells using an effective top | Recharge still routed? | `r > 1` in top cells? | Expected nonlinear effect |
+|---|---|---:|---:|---|
+| `off` | None | Yes | Yes | Smallest head-dependent storage region; potentially sharper confined/unconfined transition |
+| `recharge_receivers` | Current routed-recharge receiver cells | Yes | Yes | Localized storage stabilization; depends on receiver-set stability |
+| `all_water_table_cells` | Recharge receivers plus all detected water-table cells | Yes | Yes | Broadest unconfined storage treatment; more head-dependent cells |
+
+For debugging, compare the three modes with identical damping, time step, and forcing. The detailed nonlinear log should be used to compare water-table update norms, receiver changes, maximum `S_eff` changes, and mass-balance error. A mode should not be judged only by iteration count: it must also preserve the intended storage response and water balance.
+
 ## 2. Interpretation of the supplied run
 
 | NL iteration | raw max update (m) | L2 update (m) | recharge total |

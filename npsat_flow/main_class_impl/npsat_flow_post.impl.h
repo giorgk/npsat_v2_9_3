@@ -326,32 +326,43 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
         return;
     }
 
-    const auto interpolate_surface = [](const std::vector<double> &samples,
+    npsat_flow::WaterTableKDCloud prev_cloud, next_cloud;
+    prev_cloud.pts.reserve(wt_prev.size()/3);
+    next_cloud.pts.reserve(wt_next.size()/3);
+    for (std::size_t k=0;k<wt_prev.size();k+=3)
+    {
+        npsat_flow::WaterTableKDPoint q;
+        q.x=wt_prev[k]; q.y=wt_prev[k+1]; q.h=wt_prev[k+2];
+        prev_cloud.pts.push_back(q);
+    }
+    for (std::size_t k=0;k<wt_next.size();k+=3)
+    {
+        npsat_flow::WaterTableKDPoint q;
+        q.x=wt_next[k]; q.y=wt_next[k+1]; q.h=wt_next[k+2];
+        next_cloud.pts.push_back(q);
+    }
+    npsat_flow::WaterTableKDTree prev_tree(2,prev_cloud,nanoflann::KDTreeSingleIndexAdaptorParams(10));
+    npsat_flow::WaterTableKDTree next_tree(2,next_cloud,nanoflann::KDTreeSingleIndexAdaptorParams(10));
+    prev_tree.buildIndex();
+    next_tree.buildIndex();
+
+    const auto interpolate_surface = [](const npsat_flow::WaterTableKDCloud &cloud,
+                                        const npsat_flow::WaterTableKDTree &tree,
                                         const Point<dim-1> &p) -> double
     {
-        AssertThrow(samples.size() >= 3 && samples.size() % 3 == 0,
-                    ExcMessage("Cannot interpolate an empty water-table surface."));
-        std::vector<std::pair<double,double>> nearest;
-        nearest.reserve(samples.size()/3);
-        for (std::size_t k=0; k<samples.size(); k+=3)
-        {
-            const double dx=p[0]-samples[k];
-            const double dy=p[1]-samples[k+1];
-            const double d2=dx*dx+dy*dy;
-            if (d2 < 1e-24) return samples[k+2];
-            nearest.emplace_back(d2,samples[k+2]);
-        }
-        const std::size_t count=std::min<std::size_t>(4,nearest.size());
-        std::partial_sort(nearest.begin(), nearest.begin()+count, nearest.end(),
-                          [](const std::pair<double,double> &a,
-                             const std::pair<double,double> &b)
-                          { return a.first<b.first; });
+        const std::size_t count=std::min<std::size_t>(4,cloud.pts.size());
+        std::vector<npsat_flow::WaterTableKDTree::IndexType> ids(count);
+        std::vector<double> d2(count);
+        const double query[2]={p[0],p[1]};
+        const std::size_t found=tree.knnSearch(query,count,ids.data(),d2.data());
+        AssertThrow(found > 0, ExcMessage("Water-table KD-tree returned no samples."));
+        if (d2[0] < 1e-24) return cloud.pts[ids[0]].h;
         double sum_w=0.0, sum_h=0.0;
-        for (std::size_t k=0;k<count;++k)
+        for (std::size_t k=0;k<found;++k)
         {
-            const double w=1.0/nearest[k].first;
+            const double w=1.0/d2[k];
             sum_w+=w;
-            sum_h+=w*nearest[k].second;
+            sum_h+=w*cloud.pts[ids[k]].h;
         }
         return sum_h/sum_w;
     };
@@ -360,8 +371,8 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
     double local_wt_ref=0.0;
     for (const auto &p : local_fixed_points)
     {
-        const double hp=interpolate_surface(wt_prev,p);
-        const double hn=interpolate_surface(wt_next,p);
+        const double hp=interpolate_surface(prev_cloud,prev_tree,p);
+        const double hn=interpolate_surface(next_cloud,next_tree,p);
         local_wt_update=std::max(local_wt_update,std::abs(hn-hp));
         local_wt_ref=std::max(local_wt_ref,std::abs(hn));
     }
