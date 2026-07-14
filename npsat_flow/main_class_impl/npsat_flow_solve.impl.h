@@ -7,7 +7,8 @@
 
 template <int dim>
 void NPSAT_FLOW<dim>::solve(){
-    pcout << "Solving global system ..." << std::endl;
+    if (uo.verbose_level > 0)
+        pcout << "Solving global system ..." << std::endl;
     timer.restart();
 
 
@@ -50,7 +51,9 @@ void NPSAT_FLOW<dim>::solve(){
     block_solution.block(0) = lambda_owned;
     block_solution.block(0).update_ghost_values();
 
-    pcout << "   Schur system (Lambda) converged in " << solver_control.last_step() << " iterations." << std::endl;
+    if (uo.verbose_level > 0)
+        pcout << "   Schur system (Lambda) converged in " << solver_control.last_step() << " iterations." << std::endl;
+    last_linear_iterations = solver_control.last_step();
 
     solution_trace.reinit(lambda_locally_owned_dofs,
                       lambda_locally_relevant_dofs,
@@ -66,7 +69,8 @@ void NPSAT_FLOW<dim>::build_schur_rhs(TrilinosWrappers::MPI::Vector& schur_rhs_o
     AssertThrow(!schur_rhs_owned.has_ghost_elements(), ExcMessage("schur_rhs_owned must be owned-only (no ghosts)"));
 
     // (1) schur_rhs_owned = b_lambda (by owned dofs)
-    pcout << "build_schur_rhs" << std::endl;
+    if (uo.verbose_level > 1)
+        pcout << "build_schur_rhs" << std::endl;
 
     // b in the lambda space
     schur_rhs_owned = block_rhs_vector.block(0);

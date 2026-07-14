@@ -116,6 +116,7 @@ namespace npsat_flow {
         std::string input_path;
         std::string output_prefix;
         std::string initial_head_file;
+        std::string log_file;
 
         bool isBox = false;
         std::vector<double> box_dims;

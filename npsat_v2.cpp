@@ -106,7 +106,7 @@ private:
   void compute_heads();
   void compute_fluxes();
   void compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev, const TrilinosWrappers::MPI::Vector &h_next,
-    double &update_norm, double &ref_norm) const;
+    double &update_norm, double &ref_norm, double &full_update_norm) const;
   bool check_nonlinear_convergence(const double update_norm, const double ref_norm) const;
   bool anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel,
                                      const TrilinosWrappers::MPI::Vector &x_k,
@@ -224,6 +224,12 @@ private:
   npsat_flow::TimeStepTracker time_tracking;
   unsigned int my_rank; ///< MPI rank of this process.
   unsigned int n_proc; ///< Total number of MPI ranks.
+  unsigned int last_linear_iterations = 0;
+  double last_recharge_total = 0.0;
+  double last_stream_total = 0.0;
+  double last_well_total = 0.0;
+  double last_net_external_total = 0.0;
+  unsigned int last_dry_well_count = 0;
 
 
 };
@@ -319,6 +325,20 @@ void NPSAT_FLOW<dim>::run() {
 
   double update_norm;
   double ref_norm;
+  double full_update_norm;
+
+  std::ofstream nonlinear_log;
+  if (my_rank == 0 && !uo.log_file.empty())
+  {
+    const std::string log_path = npsat_flow::resolve_relative_path(output_root_path(), uo.log_file);
+    nonlinear_log.open(log_path, std::ios::out | std::ios::trunc);
+    AssertThrow(nonlinear_log.good(), ExcMessage("Could not open nonlinear log: " + log_path));
+    nonlinear_log << "# Detailed nonlinear iteration log\n"
+                  << "# ITER step iter wt_inf threshold full_inf raw_l2 omega linear_iters "
+                     "recharge streams wells net_external dry_wells h_min h_max h_mean\n"
+                  << "# ACCEPT step iter method history accepted_l2 aa_status m_used max_alpha step_ratio\n";
+    nonlinear_log << std::setprecision(16) << std::scientific;
+  }
 
   while (!time_tracking.done()) {
     pcout << "\n==============================================" << std::endl;
@@ -341,7 +361,6 @@ void NPSAT_FLOW<dim>::run() {
         nl_state.clear_history();
 
       for (nl_state.nl_iter = 0; nl_state.nl_iter < uo.NLC.max_picard_iters; ++nl_state.nl_iter) {
-        pcout << "  NL iter " << nl_state.nl_iter << std::endl;
         assemble_system();
         solve();
         compute_heads();
@@ -354,7 +373,38 @@ void NPSAT_FLOW<dim>::run() {
 
         // (4) Compute update norm for convergence checks
         // compare previous head h_guess and new solution h_new
-        compute_update_norm(h_guess, h_new, update_norm, ref_norm);
+        compute_update_norm(h_guess, h_new, update_norm, ref_norm, full_update_norm);
+
+        TrilinosWrappers::MPI::Vector raw_step(h_new);
+        raw_step -= h_guess;
+        double local_h_min=std::numeric_limits<double>::max();
+        double local_h_max=-std::numeric_limits<double>::max();
+        double local_h_sum=0.0;
+        unsigned int local_h_count=0;
+        for (auto it=head_locally_owned_dofs.begin();it!=head_locally_owned_dofs.end();++it)
+        {
+          local_h_min=std::min(local_h_min,h_new[*it]);
+          local_h_max=std::max(local_h_max,h_new[*it]);
+          local_h_sum+=h_new[*it];
+          ++local_h_count;
+        }
+        const double log_h_min=Utilities::MPI::min(local_h_min,mpi_communicator);
+        const double log_h_max=Utilities::MPI::max(local_h_max,mpi_communicator);
+        const double global_h_sum=Utilities::MPI::sum(local_h_sum,mpi_communicator);
+        const unsigned int global_h_count=Utilities::MPI::sum(local_h_count,mpi_communicator);
+        const double log_h_mean=global_h_count ? global_h_sum/global_h_count : 0.0;
+        if (my_rank == 0 && nonlinear_log.is_open())
+        {
+          const double threshold = uo.NLC.abs_tol_update + uo.NLC.rel_tol_update * std::max(ref_norm, 1e-30);
+          nonlinear_log << "ITER " << time_tracking.simulation_step() << ' ' << nl_state.nl_iter << ' '
+                        << update_norm << ' ' << threshold << ' ' << full_update_norm << ' '
+                        << raw_step.l2_norm() << ' ' << uo.NLC.damping_omega << ' '
+                        << last_linear_iterations << ' ' << last_recharge_total << ' '
+                        << last_stream_total << ' ' << last_well_total << ' '
+                        << last_net_external_total << ' ' << last_dry_well_count << ' '
+                        << log_h_min << ' ' << log_h_max << ' ' << log_h_mean << '\n';
+          nonlinear_log.flush();
+        }
 
         if (check_nonlinear_convergence(update_norm, ref_norm))
         {
@@ -368,6 +418,10 @@ void NPSAT_FLOW<dim>::run() {
         // ----------------------------------------------------
         TrilinosWrappers::MPI::Vector h_picard = h_guess;
         apply_damped_update(h_picard, h_new, uo.NLC.damping_omega);
+
+        // Store the fixed-point pair (x_k, H(x_k)-x_k), not the accepted
+        // accelerated displacement. The current pair must be present before AA.
+        update_anderson_history(h_guess, h_picard, nl_state, uo.NLC);
 
         const TrilinosWrappers::MPI::Vector *accepted=&h_picard;
 
@@ -387,20 +441,27 @@ void NPSAT_FLOW<dim>::run() {
           if (aa_ok)
           {
             accepted=&h_accel_owned;
-            pcout << "  Anderson acceleration accepted at NL iter " << nl_state.nl_iter << std::endl;
+            if (uo.verbose_level > 0)
+              pcout << "  Anderson acceleration accepted at NL iter " << nl_state.nl_iter << std::endl;
           }
         }
 
-        if (!aa_ok && uo.NLC.use_anderson)
+        if (my_rank == 0 && nonlinear_log.is_open())
         {
-          clear_anderson_history(nl_state);
+          TrilinosWrappers::MPI::Vector accepted_step(*accepted);
+          accepted_step -= h_guess;
+          nonlinear_log << "ACCEPT " << time_tracking.simulation_step() << ' '
+                        << nl_state.nl_iter << ' ' << (aa_ok ? "anderson" : "picard") << ' '
+                        << nl_state.x_hist.size() << ' ' << accepted_step.l2_norm() << ' '
+                        << (uo.NLC.use_anderson ? nl_state.anderson_status : "disabled") << ' '
+                        << nl_state.anderson_m_used << ' ' << nl_state.anderson_max_alpha_seen << ' '
+                        << nl_state.anderson_step_ratio << '\n';
         }
-
-        update_anderson_history(h_guess, *accepted, nl_state, uo.NLC);
 
         //apply_damped_update(h_guess, *target, uo.NLC.damping_omega);
         // Accept the chosen iterate.
         h_guess = *accepted;
+        h_guess.update_ghost_values();
         //break;
       }
     }

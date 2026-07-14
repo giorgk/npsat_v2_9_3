@@ -48,7 +48,12 @@ namespace npsat_flow{
 
     inline bool path_is_absolute(const std::string &path)
     {
-        return !path.empty() && path.front() == '/';
+        if (path.empty())
+            return false;
+        if (path.front() == '/' || path.front() == '\\')
+            return true;
+        return path.size() >= 3 && std::isalpha(static_cast<unsigned char>(path[0])) &&
+               path[1] == ':' && (path[2] == '/' || path[2] == '\\');
     }
 
     inline std::string join_paths(const std::string &base, const std::string &path)

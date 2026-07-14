@@ -6,6 +6,8 @@
 #define NON_LINEAR_H
 
 #include <deal.II/lac/trilinos_vector.h>
+#include <deque>
+#include <string>
 
 namespace npsat_flow{
     using namespace dealii;
@@ -17,11 +19,17 @@ namespace npsat_flow{
         // For Anderson: store x_k and f_k = G(x_k)-x_k history
         std::deque<dealii::TrilinosWrappers::MPI::Vector> x_hist;
         std::deque<dealii::TrilinosWrappers::MPI::Vector> f_hist;
+        std::string anderson_status = "disabled";
+        unsigned int anderson_m_used = 0;
+        double anderson_max_alpha_seen = 0.0;
+        double anderson_step_ratio = 0.0;
 
         void clear_history()
         {
             x_hist.clear();
             f_hist.clear();
+            anderson_status = "history_cleared";
+            anderson_m_used = 0;
         }
     };
 

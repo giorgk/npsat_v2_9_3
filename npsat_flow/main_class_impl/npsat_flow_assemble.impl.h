@@ -7,7 +7,8 @@
 
 template <int dim>
 void NPSAT_FLOW<dim>::assemble_system() {
-    pcout << "Assembling system at time = " << time_tracking.simulation_step() << " months..." << std::endl;
+    if (uo.verbose_level > 0)
+        pcout << "Assembling system at time = " << time_tracking.simulation_step() << " months..." << std::endl;
     double delta_time = time_tracking.duration();
 
     TimerOutput::Scope t(this->computing_timer, "assemble");
@@ -823,18 +824,24 @@ void NPSAT_FLOW<dim>::assemble_system() {
         const unsigned int global_dry_well_count = Utilities::MPI::sum(local_dry_well_count, mpi_communicator);
         const double global_dry_well_requested_total = Utilities::MPI::sum(local_dry_well_requested_total, mpi_communicator);
 
-        pcout << std::setprecision(16)
-              << "Assembly source/sink totals at step "
-              << time_tracking.simulation_step()
-              //<< ", nl_iter " << nl_iter << ":\n"
-              << "  recharge_into_aquifer = " << global_recharge_total << "\n"
-              << "  streams_into_aquifer  = " << global_stream_total << "\n"
-              << "  prescribed_wells_Q    = " << global_well_prescribed_total << "\n"
-              << "  dry_wells_zeroed      = " << global_dry_well_count << "\n"
-              << "  dry_wells_requested_Q = " << global_dry_well_requested_total << "\n"
-              << "  net_external_Q        = "
-              << (global_recharge_total + global_stream_total + global_well_prescribed_total)
-              << std::endl;
+        last_recharge_total = global_recharge_total;
+        last_stream_total = global_stream_total;
+        last_well_total = global_well_prescribed_total;
+        last_net_external_total = global_recharge_total + global_stream_total + global_well_prescribed_total;
+        last_dry_well_count = global_dry_well_count;
+
+        pcout << "ASM " << std::setw(3) << nl_state.nl_iter
+              << " | recharge " << std::scientific << std::setprecision(6) << global_recharge_total
+              << " | streams " << global_stream_total
+              << " | pumping " << global_well_prescribed_total
+              << " | net " << last_net_external_total
+              << " | dry wells " << global_dry_well_count
+              << std::defaultfloat << std::endl;
+
+        if (uo.verbose_level > 1 && global_dry_well_count > 0)
+            pcout << "  Dry-well requested pumping removed: "
+                  << std::scientific << global_dry_well_requested_total
+                  << std::defaultfloat << std::endl;
     }
 
     // =====================================================
@@ -1267,7 +1274,10 @@ void NPSAT_FLOW<dim>::compute_cell_r_and_storage(npsat_flow::CellNonlinearData &
 
     // Window active only when the head is between the geometric bottom and top.
     const double w_bot = npsat_flow::logistic_sigma((out.h_e - out.z_bot) / epsS);
-    const double w_top = npsat_flow::logistic_sigma((out.z_top - out.h_e) / epsS);
+    // For effective-top cells retain the unconfined storage window up to the
+    // extended top. This is equivalent to extending the top cell to the head,
+    // while r>1 supplies the corresponding additional transmissive thickness.
+    const double w_top = npsat_flow::logistic_sigma((out.assembly_z_top - out.h_e) / epsS);
     const double w = w_bot * w_top;
 
 

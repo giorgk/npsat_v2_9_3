@@ -7,7 +7,8 @@
 
 template <int dim>
 void NPSAT_FLOW<dim>::compute_heads(){
-    pcout << "Recovering heads from trace solution..." << std::endl;
+    if (uo.verbose_level > 0)
+        pcout << "Recovering heads from trace solution..." << std::endl;
     h_new = 0.0;
     double delta_time = time_tracking.duration();
 
@@ -184,8 +185,9 @@ void NPSAT_FLOW<dim>::compute_heads(){
     const double global_abs_head_max =
         Utilities::MPI::max(local_abs_head_max, mpi_communicator);
 
-    pcout << "  Head range: [" << global_min << ", " << global_max
-          << "] m, Mean: " << global_mean << " m" << std::endl;
+    if (uo.verbose_level > 0)
+        pcout << "  Head range: [" << global_min << ", " << global_max
+              << "] m, Mean: " << global_mean << " m" << std::endl;
 
     if (uo.verbose_level > 1 &&std::abs(local_abs_head_max - global_abs_head_max) <= 1e-12 * std::max(1.0, global_abs_head_max))
     {
@@ -217,13 +219,15 @@ void NPSAT_FLOW<dim>::compute_heads(){
 
     TrilinosWrappers::MPI::Vector diff(h_new);
     diff -= h_guess;
-    pcout << "  Head update L2 norm = " << diff.l2_norm() << std::endl;
+    if (uo.verbose_level > 0)
+        pcout << "  Head update L2 norm = " << diff.l2_norm() << std::endl;
 }
 
 template <int dim>
 void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev,
                                const TrilinosWrappers::MPI::Vector &h_next,
-                               double &update_norm, double &ref_norm) const{
+                               double &update_norm, double &ref_norm,
+                               double &full_update_norm) const{
     AssertDimension(h_prev.size(), h_next.size());
 
     // We compute an L-infinity (max) norm of the update on locally-owned entries,
@@ -248,6 +252,12 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
     const unsigned int n_head_dofs = fe_head.n_dofs_per_cell();
     std::vector<types::global_dof_index> head_dof_indices(n_head_dofs);
 
+    // Triples (x,y,h_wt) defining each iterate's current water-table surface.
+    // Both surfaces are later interpolated at the same, fixed top-cell centers.
+    std::vector<double> local_wt_prev;
+    std::vector<double> local_wt_next;
+    std::vector<Point<dim-1>> local_fixed_points;
+
     for (auto head_cell = dof_handler_head.begin_active(); head_cell != dof_handler_head.end(); ++head_cell){
         if (!head_cell->is_locally_owned())
             continue;
@@ -271,17 +281,97 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
         local_ref_max    = std::max(local_ref_max, h);
         // Optional more robust scaling:
         // local_ref_max = std::max(local_ref_max, std::abs(hp));
+        double z_bot = 0.0;
+        double z_top = 0.0;
+        for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_face; ++v)
+        {
+            z_bot += head_cell->face(4)->vertex(v)[dim-1];
+            z_top += head_cell->face(5)->vertex(v)[dim-1];
+        }
+        z_bot /= GeometryInfo<dim>::vertices_per_face;
+        z_top /= GeometryInfo<dim>::vertices_per_face;
+        const auto append_wt = [&](const double head, std::vector<double> &samples)
+        {
+            const bool partial = head > z_bot && head < z_top;
+            const bool saturated_top = head >= z_top && head_cell->face(5)->at_boundary();
+            if (partial || saturated_top)
+            {
+                samples.push_back(head_cell->center()[0]);
+                samples.push_back(head_cell->center()[1]);
+                samples.push_back(head);
+            }
+        };
+        append_wt(h_prev[i], local_wt_prev);
+        append_wt(h_next[i], local_wt_next);
+
+        if (head_cell->face(5)->at_boundary())
+            local_fixed_points.emplace_back(head_cell->center()[0], head_cell->center()[1]);
     }
     // Global reductions
-    update_norm = Utilities::MPI::max(local_update_max, mpi_communicator);
-    ref_norm    = Utilities::MPI::max(local_ref_max,    mpi_communicator);
+    full_update_norm = Utilities::MPI::max(local_update_max, mpi_communicator);
+
+    const auto gathered_prev = Utilities::MPI::all_gather(mpi_communicator, local_wt_prev);
+    const auto gathered_next = Utilities::MPI::all_gather(mpi_communicator, local_wt_next);
+    std::vector<double> wt_prev, wt_next;
+    for (const auto &part : gathered_prev) wt_prev.insert(wt_prev.end(), part.begin(), part.end());
+    for (const auto &part : gathered_next) wt_next.insert(wt_next.end(), part.begin(), part.end());
+
+    // A completely dry model has no water-table surface to interpolate. Fall
+    // back to the full-domain metric instead of failing in that special case.
+    if (wt_prev.empty() || wt_next.empty())
+    {
+        update_norm = full_update_norm;
+        ref_norm = Utilities::MPI::max(local_ref_max, mpi_communicator);
+        if (ref_norm < 1e-30) ref_norm = 1.0;
+        return;
+    }
+
+    const auto interpolate_surface = [](const std::vector<double> &samples,
+                                        const Point<dim-1> &p) -> double
+    {
+        AssertThrow(samples.size() >= 3 && samples.size() % 3 == 0,
+                    ExcMessage("Cannot interpolate an empty water-table surface."));
+        std::vector<std::pair<double,double>> nearest;
+        nearest.reserve(samples.size()/3);
+        for (std::size_t k=0; k<samples.size(); k+=3)
+        {
+            const double dx=p[0]-samples[k];
+            const double dy=p[1]-samples[k+1];
+            const double d2=dx*dx+dy*dy;
+            if (d2 < 1e-24) return samples[k+2];
+            nearest.emplace_back(d2,samples[k+2]);
+        }
+        const std::size_t count=std::min<std::size_t>(4,nearest.size());
+        std::partial_sort(nearest.begin(), nearest.begin()+count, nearest.end(),
+                          [](const auto &a,const auto &b){return a.first<b.first;});
+        double sum_w=0.0, sum_h=0.0;
+        for (std::size_t k=0;k<count;++k)
+        {
+            const double w=1.0/nearest[k].first;
+            sum_w+=w;
+            sum_h+=w*nearest[k].second;
+        }
+        return sum_h/sum_w;
+    };
+
+    double local_wt_update=0.0;
+    double local_wt_ref=0.0;
+    for (const auto &p : local_fixed_points)
+    {
+        const double hp=interpolate_surface(wt_prev,p);
+        const double hn=interpolate_surface(wt_next,p);
+        local_wt_update=std::max(local_wt_update,std::abs(hn-hp));
+        local_wt_ref=std::max(local_wt_ref,std::abs(hn));
+    }
+    update_norm = Utilities::MPI::max(local_wt_update, mpi_communicator);
+    ref_norm = Utilities::MPI::max(local_wt_ref, mpi_communicator);
 
     // Safety: avoid zero reference scale downstream
     if (ref_norm < 1e-30)
         ref_norm = 1.0;
 
-    if (uo.verbose_level > 1 && (std::abs(local_update_max - update_norm) <=
-        1e-12 * std::max(1.0, update_norm)))
+    if (uo.verbose_level > 1 && (std::abs(local_update_max - full_update_norm) <=
+        1e-12 * std::max(1.0, full_update_norm)))
     {
         std::cout << std::setprecision(16)
                   << "  Head update max diagnostic on rank " << my_rank << ":\n"
@@ -319,16 +409,11 @@ bool NPSAT_FLOW<dim>::check_nonlinear_convergence(const double update_norm, cons
     // (as returned by compute_update_norm())
     const bool converged = (update_norm <= threshold);
 
-    pcout << "+--------------------------------------+\n"
-          << "| update_norm : " << std::fixed << std::setprecision(6)
-          << std::setw(12) << update_norm << " |\n"
-          << "| threshold   : "
-          << std::setw(12) << threshold << " |\n"
-          << "+--------------------------------------+\n"
-          << "| Status      : "
-          << (converged ? "CONVERGED     " : "NOT CONVERGED ")
-          << "|\n"
-          << "+--------------------------------------+"
+    pcout << "NL " << std::setw(3) << nl_state.nl_iter
+          << " | WT dH_inf " << std::scientific << std::setprecision(3) << update_norm
+          << " | tol " << threshold
+          << " | linear " << std::setw(4) << last_linear_iterations
+          << " | " << (converged ? "CONVERGED" : "continue")
           << std::defaultfloat << std::endl;
 
     return converged;
@@ -342,29 +427,42 @@ bool NPSAT_FLOW<dim>::anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel
                                     const npsat_flow::NonlinearControls &ctl) const{
 
     AssertThrow(ctl.anderson_m >= 1, ExcMessage("Anderson memory depth must be >= 1."));
+    nl_state.anderson_m_used = 0;
+    nl_state.anderson_max_alpha_seen = 0.0;
+    nl_state.anderson_step_ratio = 0.0;
 
-    // H(xk) already contains damping.
-    x_accel = H_xk;
+    // H(xk) already contains Picard damping. Anderson beta controls the
+    // residual part of the accelerated map.
+    x_accel = x_k;
 
     // Need enough history
     const std::size_t L = nl_state.x_hist.size();
 
     if (nl_state.nl_iter < ctl.anderson_start)
+    {
+        nl_state.anderson_status = "before_start";
         return false;
+    }
 
     if (L < 2)
+    {
+        nl_state.anderson_status = "insufficient_history";
         return false;
+    }
 
     const unsigned int m_used = std::min<unsigned int>(ctl.anderson_m,static_cast<unsigned int>(L - 1));
 
     if (m_used == 0)
+    {
+        nl_state.anderson_status = "zero_depth";
         return false;
+    }
+    nl_state.anderson_m_used = m_used;
 
     //---------------------------------------------------
     // Current residual
     //---------------------------------------------------
-    TrilinosWrappers::MPI::Vector f_k = H_xk;
-    f_k -= x_k;
+    const TrilinosWrappers::MPI::Vector &f_k = nl_state.f_hist.back();
 
     //---------------------------------------------------
     // Build Δx and Δf
@@ -417,6 +515,7 @@ bool NPSAT_FLOW<dim>::anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel
     }
     catch (...)
     {
+        nl_state.anderson_status = "factorization_failed";
         return false;
     }
 
@@ -428,22 +527,33 @@ bool NPSAT_FLOW<dim>::anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel
     for (unsigned int i=0;i<m_used;++i)
     {
         if (!std::isfinite(alpha[i]))
+        {
+            nl_state.anderson_status = "nonfinite_coefficient";
             return false;
+        }
 
         max_alpha = std::max(max_alpha,
                              std::fabs(alpha[i]));
     }
 
+    nl_state.anderson_max_alpha_seen = max_alpha;
     if (max_alpha > ctl.anderson_max_alpha)
+    {
+        nl_state.anderson_status = "coefficient_limit";
         return false;
+    }
 
     //---------------------------------------------------
     // Form accelerated iterate
     //---------------------------------------------------
     const double beta = ctl.anderson_beta;
-
+    x_accel.add(beta, f_k);
     for (unsigned int i=0;i<m_used;++i)
-        x_accel.add(-beta*alpha[i],dx[i]);
+    {
+        // Type-II Anderson: x + beta*f - (Delta x + beta*Delta f)*alpha.
+        x_accel.add(-alpha[i], dx[i]);
+        x_accel.add(-beta*alpha[i], df[i]);
+    }
 
     //---------------------------------------------------
     // Reject huge extrapolations
@@ -454,9 +564,15 @@ bool NPSAT_FLOW<dim>::anderson_accelerate(TrilinosWrappers::MPI::Vector &x_accel
     TrilinosWrappers::MPI::Vector picard_step=H_xk;
     picard_step-=x_k;
 
-    if (aa_step.l2_norm() > ctl.anderson_max_step_factor * picard_step.l2_norm())
+    const double picard_norm = picard_step.l2_norm();
+    nl_state.anderson_step_ratio = picard_norm > 0.0 ? aa_step.l2_norm()/picard_norm : 0.0;
+    if (nl_state.anderson_step_ratio > ctl.anderson_max_step_factor)
+    {
+        nl_state.anderson_status = "step_limit";
         return false;
+    }
 
+    nl_state.anderson_status = "accepted";
     return true;
 }
 
@@ -473,7 +589,7 @@ void NPSAT_FLOW<dim>::update_anderson_history(
     TrilinosWrappers::MPI::Vector f=x_new;
     f-=x_old;
 
-    nl_state.x_hist.push_back(x_new);
+    nl_state.x_hist.push_back(x_old);
     nl_state.f_hist.push_back(f);
 
     const std::size_t keep =

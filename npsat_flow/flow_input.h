@@ -181,6 +181,7 @@ namespace npsat_flow {
             //[misc]
             ("Misc.Print_matrices", po::value<int>()->default_value(1), "Print matrices Debug only")
             ("Misc.Verbose_level", po::value<int>()->default_value(0), "How much output you want [0 1 2]")
+            ("Misc.LogFile", po::value<std::string>()->default_value(""), "Detailed nonlinear log file (relative paths use Paths.Output; empty disables it)")
 
         ;
 
@@ -304,12 +305,26 @@ namespace npsat_flow {
                     uo.NLC.anderson_max_alpha = vm_cfg["Nonlinear.AndersonMaxAlpha"].as<double>();
                     uo.NLC.anderson_max_step_factor = vm_cfg["Nonlinear.AndersonMaxStepFactor"].as<double>();
                     uo.NLC.carry_history_across_timesteps = vm_cfg["Nonlinear.CarryHistoryAcrossTimesteps"].as<int>() == 1;
-                    //uo.NLC.recharge_stabilization_mode = parse_recharge_stabilization_mode(vm_cfg["Nonlinear.RechargeStabilizationMode"].as<std::string>());
+                    const std::string recharge_mode = vm_cfg["Nonlinear.RechargeStabilizationMode"].as<std::string>();
+                    if (recharge_mode == "hysteresis_only")
+                        uo.NLC.recharge_stabilization_mode = NonlinearControls::RechargeStabilizationMode::HysteresisOnly;
+                    else if (recharge_mode == "effective_top")
+                        uo.NLC.recharge_stabilization_mode = NonlinearControls::RechargeStabilizationMode::EffectiveTop;
+                    else
+                        throw std::runtime_error("Invalid Nonlinear.RechargeStabilizationMode: " + recharge_mode);
                     uo.NLC.use_recharge_hysteresis = vm_cfg["Nonlinear.UseRechargeHysteresis"].as<int>() == 1;
                     uo.NLC.recharge_drying_saturated_fraction = vm_cfg["Nonlinear.RechargeDryingSaturatedFraction"].as<double>();
                     uo.NLC.recharge_wetting_saturated_fraction = vm_cfg["Nonlinear.RechargeWettingSaturatedFraction"].as<double>();
                     uo.NLC.recharge_min_relative_k = vm_cfg["Nonlinear.RechargeMinRelativeK"].as<double>();
-                    //uo.NLC.effective_top_mode = parse_effective_top_mode(vm_cfg["Nonlinear.EffectiveTopMode"].as<std::string>());
+                    const std::string effective_top_mode = vm_cfg["Nonlinear.EffectiveTopMode"].as<std::string>();
+                    if (effective_top_mode == "off")
+                        uo.NLC.effective_top_mode = NonlinearControls::EffectiveTopMode::Off;
+                    else if (effective_top_mode == "recharge_receivers")
+                        uo.NLC.effective_top_mode = NonlinearControls::EffectiveTopMode::RechargeReceivers;
+                    else if (effective_top_mode == "all_water_table_cells")
+                        uo.NLC.effective_top_mode = NonlinearControls::EffectiveTopMode::AllWaterTableCells;
+                    else
+                        throw std::runtime_error("Invalid Nonlinear.EffectiveTopMode: " + effective_top_mode);
                     if (uo.NLC.recharge_stabilization_mode == NonlinearControls::RechargeStabilizationMode::HysteresisOnly)
                     {
                         uo.NLC.effective_top_mode = NonlinearControls::EffectiveTopMode::Off;
@@ -342,6 +357,7 @@ namespace npsat_flow {
                 { //Misc
                     uo.print_matrices = vm_cfg["Misc.Print_matrices"].as<int>() == 1;
                     uo.verbose_level = vm_cfg["Misc.Verbose_level"].as<int>();
+                    uo.log_file = vm_cfg["Misc.LogFile"].as<std::string>();
                 }
             }
             catch (std::exception& E)
