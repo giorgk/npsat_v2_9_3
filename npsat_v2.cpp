@@ -481,13 +481,17 @@ void NPSAT_FLOW<dim>::run() {
           }
         }
 
+        // l2_norm() is an MPI collective for Trilinos vectors and must be
+        // called by every rank, even though only rank 0 writes the log file.
+        TrilinosWrappers::MPI::Vector accepted_step(*accepted);
+        accepted_step -= h_guess;
+        const double accepted_step_l2 = accepted_step.l2_norm();
+
         if (my_rank == 0 && nonlinear_log.is_open())
         {
-          TrilinosWrappers::MPI::Vector accepted_step(*accepted);
-          accepted_step -= h_guess;
           nonlinear_log << "ACCEPT " << time_tracking.simulation_step() << ' '
                         << nl_state.nl_iter << ' ' << (aa_ok ? "anderson" : "picard") << ' '
-                        << nl_state.x_hist.size() << ' ' << accepted_step.l2_norm() << ' '
+                        << nl_state.x_hist.size() << ' ' << accepted_step_l2 << ' '
                         << (uo.NLC.use_anderson ? nl_state.anderson_status : "disabled") << ' '
                         << nl_state.anderson_m_used << ' ' << nl_state.anderson_max_alpha_seen << ' '
                         << nl_state.anderson_step_ratio << '\n';
@@ -502,6 +506,8 @@ void NPSAT_FLOW<dim>::run() {
         pcout << "STG " << std::setw(3) << nl_state.nl_iter
               << " | nonlinear update " << std::fixed << std::setprecision(2)
               << update_seconds << " s | method " << (aa_ok ? "Anderson" : "Picard")
+              << " | AA " << (uo.NLC.use_anderson ? nl_state.anderson_status : "disabled")
+              << " | history " << nl_state.x_hist.size()
               << std::defaultfloat << std::endl;
         //break;
       }
