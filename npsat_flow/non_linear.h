@@ -8,30 +8,9 @@
 #include <deal.II/lac/trilinos_vector.h>
 #include <deque>
 #include <string>
-#include "nanoflann.hpp"
 
 namespace npsat_flow{
     using namespace dealii;
-
-    struct WaterTableKDPoint
-    {
-        double x = 0.0;
-        double y = 0.0;
-        double h = 0.0;
-    };
-
-    struct WaterTableKDCloud
-    {
-        std::vector<WaterTableKDPoint> pts;
-        inline std::size_t kdtree_get_point_count() const { return pts.size(); }
-        inline double kdtree_get_pt(const std::size_t i, const std::size_t d) const
-        { return d == 0 ? pts[i].x : pts[i].y; }
-        template <class BBOX> bool kdtree_get_bbox(BBOX &) const { return false; }
-    };
-
-    typedef nanoflann::KDTreeSingleIndexAdaptor<
-        nanoflann::L2_Adaptor<double, WaterTableKDCloud>,
-        WaterTableKDCloud, 2> WaterTableKDTree;
 
     struct NonlinearState
     {

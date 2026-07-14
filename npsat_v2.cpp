@@ -47,6 +47,7 @@
 // This is needed for C++ output:
 #include <iostream>
 #include <fstream>
+#include <chrono>
 
 #include "npsat_flow/flow_input.h"
 #include "npsat_flow/time_step_tracking.h"
@@ -334,8 +335,9 @@ void NPSAT_FLOW<dim>::run() {
     nonlinear_log.open(log_path, std::ios::out | std::ios::trunc);
     AssertThrow(nonlinear_log.good(), ExcMessage("Could not open nonlinear log: " + log_path));
     nonlinear_log << "# Detailed nonlinear iteration log\n"
-                  << "# ITER step iter wt_inf threshold full_inf raw_l2 omega linear_iters "
-                     "recharge streams wells net_external dry_wells h_min h_max h_mean\n"
+                  << "# ITER step iter update_inf threshold full_inf raw_l2 omega linear_iters "
+                     "assemble_s solve_s recover_s convergence_s recharge streams wells "
+                     "net_external dry_wells h_min h_max h_mean\n"
                   << "# ACCEPT step iter method history accepted_l2 aa_status m_used max_alpha step_ratio\n";
     nonlinear_log << std::setprecision(16) << std::scientific;
   }
@@ -361,9 +363,40 @@ void NPSAT_FLOW<dim>::run() {
         nl_state.clear_history();
 
       for (nl_state.nl_iter = 0; nl_state.nl_iter < uo.NLC.max_picard_iters; ++nl_state.nl_iter) {
+        typedef std::chrono::steady_clock StageClock;
+        StageClock::time_point stage_start;
+        double stage_local_seconds;
+        double assemble_seconds;
+        double solve_seconds;
+        double recover_seconds;
+        double convergence_seconds;
+
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | assembly started..." << std::endl;
+        stage_start = StageClock::now();
         assemble_system();
+        stage_local_seconds = std::chrono::duration<double>(StageClock::now()-stage_start).count();
+        assemble_seconds = Utilities::MPI::max(stage_local_seconds,mpi_communicator);
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | assembly " << std::fixed << std::setprecision(2) << assemble_seconds
+              << " s | solver started..." << std::defaultfloat << std::endl;
+
+        stage_start = StageClock::now();
         solve();
+        stage_local_seconds = std::chrono::duration<double>(StageClock::now()-stage_start).count();
+        solve_seconds = Utilities::MPI::max(stage_local_seconds,mpi_communicator);
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | solver " << std::fixed << std::setprecision(2) << solve_seconds
+              << " s (" << last_linear_iterations << " iters) | head recovery started..."
+              << std::defaultfloat << std::endl;
+
+        stage_start = StageClock::now();
         compute_heads();
+        stage_local_seconds = std::chrono::duration<double>(StageClock::now()-stage_start).count();
+        recover_seconds = Utilities::MPI::max(stage_local_seconds,mpi_communicator);
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | head recovery " << std::fixed << std::setprecision(2) << recover_seconds
+              << " s | convergence check started..." << std::defaultfloat << std::endl;
 
         if (uo.sim_opt.confined)
         {
@@ -373,7 +406,13 @@ void NPSAT_FLOW<dim>::run() {
 
         // (4) Compute update norm for convergence checks
         // compare previous head h_guess and new solution h_new
+        stage_start = StageClock::now();
         compute_update_norm(h_guess, h_new, update_norm, ref_norm, full_update_norm);
+        stage_local_seconds = std::chrono::duration<double>(StageClock::now()-stage_start).count();
+        convergence_seconds = Utilities::MPI::max(stage_local_seconds,mpi_communicator);
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | convergence check " << std::fixed << std::setprecision(2)
+              << convergence_seconds << " s" << std::defaultfloat << std::endl;
 
         TrilinosWrappers::MPI::Vector raw_step(h_new);
         raw_step -= h_guess;
@@ -403,7 +442,9 @@ void NPSAT_FLOW<dim>::run() {
           nonlinear_log << "ITER " << time_tracking.simulation_step() << ' ' << nl_state.nl_iter << ' '
                         << update_norm << ' ' << threshold << ' ' << full_update_norm << ' '
                         << raw_step.l2_norm() << ' ' << uo.NLC.damping_omega << ' '
-                        << last_linear_iterations << ' ' << last_recharge_total << ' '
+                        << last_linear_iterations << ' ' << assemble_seconds << ' '
+                        << solve_seconds << ' ' << recover_seconds << ' '
+                        << convergence_seconds << ' ' << last_recharge_total << ' '
                         << last_stream_total << ' ' << last_well_total << ' '
                         << last_net_external_total << ' ' << last_dry_well_count << ' '
                         << log_h_min << ' ' << log_h_max << ' ' << log_h_mean << '\n';

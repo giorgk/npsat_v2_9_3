@@ -252,12 +252,6 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
     const unsigned int n_head_dofs = fe_head.n_dofs_per_cell();
     std::vector<types::global_dof_index> head_dof_indices(n_head_dofs);
 
-    // Triples (x,y,h_wt) defining each iterate's current water-table surface.
-    // Both surfaces are later interpolated at the same, fixed top-cell centers.
-    std::vector<double> local_wt_prev;
-    std::vector<double> local_wt_next;
-    std::vector<Point<dim-1>> local_fixed_points;
-
     for (auto head_cell = dof_handler_head.begin_active(); head_cell != dof_handler_head.end(); ++head_cell){
         if (!head_cell->is_locally_owned())
             continue;
@@ -281,105 +275,15 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
         local_ref_max    = std::max(local_ref_max, h);
         // Optional more robust scaling:
         // local_ref_max = std::max(local_ref_max, std::abs(hp));
-        double z_bot = 0.0;
-        double z_top = 0.0;
-        for (unsigned int v = 0; v < GeometryInfo<dim>::vertices_per_face; ++v)
-        {
-            z_bot += head_cell->face(4)->vertex(v)[dim-1];
-            z_top += head_cell->face(5)->vertex(v)[dim-1];
-        }
-        z_bot /= GeometryInfo<dim>::vertices_per_face;
-        z_top /= GeometryInfo<dim>::vertices_per_face;
-        const auto append_wt = [&](const double head, std::vector<double> &samples)
-        {
-            const bool partial = head > z_bot && head < z_top;
-            const bool saturated_top = head >= z_top && head_cell->face(5)->at_boundary();
-            if (partial || saturated_top)
-            {
-                samples.push_back(head_cell->center()[0]);
-                samples.push_back(head_cell->center()[1]);
-                samples.push_back(head);
-            }
-        };
-        append_wt(h_prev[i], local_wt_prev);
-        append_wt(h_next[i], local_wt_next);
-
-        if (head_cell->face(5)->at_boundary())
-            local_fixed_points.emplace_back(head_cell->center()[0], head_cell->center()[1]);
     }
     // Global reductions
     full_update_norm = Utilities::MPI::max(local_update_max, mpi_communicator);
 
-    const auto gathered_prev = Utilities::MPI::all_gather(mpi_communicator, local_wt_prev);
-    const auto gathered_next = Utilities::MPI::all_gather(mpi_communicator, local_wt_next);
-    std::vector<double> wt_prev, wt_next;
-    for (const auto &part : gathered_prev) wt_prev.insert(wt_prev.end(), part.begin(), part.end());
-    for (const auto &part : gathered_next) wt_next.insert(wt_next.end(), part.begin(), part.end());
-
-    // A completely dry model has no water-table surface to interpolate. Fall
-    // back to the full-domain metric instead of failing in that special case.
-    if (wt_prev.empty() || wt_next.empty())
-    {
-        update_norm = full_update_norm;
-        ref_norm = Utilities::MPI::max(local_ref_max, mpi_communicator);
-        if (ref_norm < 1e-30) ref_norm = 1.0;
-        return;
-    }
-
-    npsat_flow::WaterTableKDCloud prev_cloud, next_cloud;
-    prev_cloud.pts.reserve(wt_prev.size()/3);
-    next_cloud.pts.reserve(wt_next.size()/3);
-    for (std::size_t k=0;k<wt_prev.size();k+=3)
-    {
-        npsat_flow::WaterTableKDPoint q;
-        q.x=wt_prev[k]; q.y=wt_prev[k+1]; q.h=wt_prev[k+2];
-        prev_cloud.pts.push_back(q);
-    }
-    for (std::size_t k=0;k<wt_next.size();k+=3)
-    {
-        npsat_flow::WaterTableKDPoint q;
-        q.x=wt_next[k]; q.y=wt_next[k+1]; q.h=wt_next[k+2];
-        next_cloud.pts.push_back(q);
-    }
-    npsat_flow::WaterTableKDTree prev_tree(2,prev_cloud,nanoflann::KDTreeSingleIndexAdaptorParams(10));
-    npsat_flow::WaterTableKDTree next_tree(2,next_cloud,nanoflann::KDTreeSingleIndexAdaptorParams(10));
-    prev_tree.buildIndex();
-    next_tree.buildIndex();
-
-    const auto interpolate_surface = [](const npsat_flow::WaterTableKDCloud &cloud,
-                                        const npsat_flow::WaterTableKDTree &tree,
-                                        const Point<dim-1> &p) -> double
-    {
-        const std::size_t count=std::min<std::size_t>(4,cloud.pts.size());
-        std::vector<npsat_flow::WaterTableKDTree::IndexType> ids(count);
-        std::vector<double> d2(count);
-        const double query[2]={p[0],p[1]};
-        const std::size_t found=tree.knnSearch(query,count,ids.data(),d2.data());
-        AssertThrow(found > 0, ExcMessage("Water-table KD-tree returned no samples."));
-        if (d2[0] < 1e-24) return cloud.pts[ids[0]].h;
-        double sum_w=0.0, sum_h=0.0;
-        for (std::size_t k=0;k<found;++k)
-        {
-            const double w=1.0/d2[k];
-            sum_w+=w;
-            sum_h+=w*cloud.pts[ids[k]].h;
-        }
-        return sum_h/sum_w;
-    };
-
-    double local_wt_update=0.0;
-    double local_wt_ref=0.0;
-    for (const auto &p : local_fixed_points)
-    {
-        const double hp=interpolate_surface(prev_cloud,prev_tree,p);
-        const double hn=interpolate_surface(next_cloud,next_tree,p);
-        local_wt_update=std::max(local_wt_update,std::abs(hn-hp));
-        local_wt_ref=std::max(local_wt_ref,std::abs(hn));
-    }
-    update_norm = Utilities::MPI::max(local_wt_update, mpi_communicator);
-    ref_norm = Utilities::MPI::max(local_wt_ref, mpi_communicator);
-
-    // Safety: avoid zero reference scale downstream
+    // Water-table interpolation is intentionally disabled for now. Use the
+    // original convergence measure: the global L-infinity update over every
+    // DG0 cell-head DoF.
+    update_norm = full_update_norm;
+    ref_norm = Utilities::MPI::max(local_ref_max, mpi_communicator);
     if (ref_norm < 1e-30)
         ref_norm = 1.0;
 
@@ -423,7 +327,7 @@ bool NPSAT_FLOW<dim>::check_nonlinear_convergence(const double update_norm, cons
     const bool converged = (update_norm <= threshold);
 
     pcout << "NL " << std::setw(3) << nl_state.nl_iter
-          << " | WT dH_inf " << std::scientific << std::setprecision(3) << update_norm
+          << " | dH_inf " << std::scientific << std::setprecision(3) << update_norm
           << " | tol " << threshold
           << " | linear " << std::setw(4) << last_linear_iterations
           << " | " << (converged ? "CONVERGED" : "continue")
