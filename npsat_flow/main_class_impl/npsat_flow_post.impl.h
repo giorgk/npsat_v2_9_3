@@ -184,6 +184,9 @@ void NPSAT_FLOW<dim>::compute_heads(){
     const double global_mean = (global_count > 0 ? global_sum / static_cast<double>(global_count) : 0.0);
     const double global_abs_head_max =
         Utilities::MPI::max(local_abs_head_max, mpi_communicator);
+    last_head_min = global_min;
+    last_head_max = global_max;
+    last_head_mean = global_mean;
 
     if (uo.verbose_level > 0)
         pcout << "  Head range: [" << global_min << ", " << global_max
@@ -219,8 +222,9 @@ void NPSAT_FLOW<dim>::compute_heads(){
 
     TrilinosWrappers::MPI::Vector diff(h_new);
     diff -= h_guess;
+    last_head_update_l2 = diff.l2_norm();
     if (uo.verbose_level > 0)
-        pcout << "  Head update L2 norm = " << diff.l2_norm() << std::endl;
+        pcout << "  Head update L2 norm = " << last_head_update_l2 << std::endl;
 }
 
 template <int dim>

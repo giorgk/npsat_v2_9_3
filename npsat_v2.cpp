@@ -231,6 +231,10 @@ private:
   double last_well_total = 0.0;
   double last_net_external_total = 0.0;
   unsigned int last_dry_well_count = 0;
+  double last_head_min = 0.0;
+  double last_head_max = 0.0;
+  double last_head_mean = 0.0;
+  double last_head_update_l2 = 0.0;
 
 
 };
@@ -414,48 +418,34 @@ void NPSAT_FLOW<dim>::run() {
               << " | convergence check " << std::fixed << std::setprecision(2)
               << convergence_seconds << " s" << std::defaultfloat << std::endl;
 
-        TrilinosWrappers::MPI::Vector raw_step(h_new);
-        raw_step -= h_guess;
-        double local_h_min=std::numeric_limits<double>::max();
-        double local_h_max=-std::numeric_limits<double>::max();
-        double local_h_sum=0.0;
-        unsigned int local_h_count=0;
-        for (auto it=head_locally_owned_dofs.begin();it!=head_locally_owned_dofs.end();++it)
-        {
-          // Non-const Trilinos operator[] returns a VectorReference proxy in
-          // deal.II 9.3. GCC 5 cannot deduce a common std::min/max template
-          // type from double and that proxy, so materialize the scalar first.
-          const double head_value = static_cast<double>(h_new[*it]);
-          local_h_min=std::min(local_h_min,head_value);
-          local_h_max=std::max(local_h_max,head_value);
-          local_h_sum+=head_value;
-          ++local_h_count;
-        }
-        const double log_h_min=Utilities::MPI::min(local_h_min,mpi_communicator);
-        const double log_h_max=Utilities::MPI::max(local_h_max,mpi_communicator);
-        const double global_h_sum=Utilities::MPI::sum(local_h_sum,mpi_communicator);
-        const unsigned int global_h_count=Utilities::MPI::sum(local_h_count,mpi_communicator);
-        const double log_h_mean=global_h_count ? global_h_sum/global_h_count : 0.0;
+        // Report convergence before preparing or writing the detailed log.
+        // In particular, do not let a slow network-filesystem write make the
+        // nonlinear solve appear stuck after the convergence timing line.
+        const bool nonlinear_converged = check_nonlinear_convergence(update_norm, ref_norm);
+
         if (my_rank == 0 && nonlinear_log.is_open())
         {
           const double threshold = uo.NLC.abs_tol_update + uo.NLC.rel_tol_update * std::max(ref_norm, 1e-30);
           nonlinear_log << "ITER " << time_tracking.simulation_step() << ' ' << nl_state.nl_iter << ' '
                         << update_norm << ' ' << threshold << ' ' << full_update_norm << ' '
-                        << raw_step.l2_norm() << ' ' << uo.NLC.damping_omega << ' '
+                        << last_head_update_l2 << ' ' << uo.NLC.damping_omega << ' '
                         << last_linear_iterations << ' ' << assemble_seconds << ' '
                         << solve_seconds << ' ' << recover_seconds << ' '
                         << convergence_seconds << ' ' << last_recharge_total << ' '
                         << last_stream_total << ' ' << last_well_total << ' '
                         << last_net_external_total << ' ' << last_dry_well_count << ' '
-                        << log_h_min << ' ' << log_h_max << ' ' << log_h_mean << '\n';
-          nonlinear_log.flush();
+                        << last_head_min << ' ' << last_head_max << ' ' << last_head_mean << '\n';
         }
 
-        if (check_nonlinear_convergence(update_norm, ref_norm))
+        if (nonlinear_converged)
         {
           h_guess = h_new;
           break;
         }
+
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | nonlinear update started..." << std::endl;
+        stage_start = StageClock::now();
 
         // ----------------------------------------------------
         // First build the damped Picard iterate.
@@ -507,6 +497,12 @@ void NPSAT_FLOW<dim>::run() {
         // Accept the chosen iterate.
         h_guess = *accepted;
         h_guess.update_ghost_values();
+        stage_local_seconds = std::chrono::duration<double>(StageClock::now()-stage_start).count();
+        const double update_seconds = Utilities::MPI::max(stage_local_seconds,mpi_communicator);
+        pcout << "STG " << std::setw(3) << nl_state.nl_iter
+              << " | nonlinear update " << std::fixed << std::setprecision(2)
+              << update_seconds << " s | method " << (aa_ok ? "Anderson" : "Picard")
+              << std::defaultfloat << std::endl;
         //break;
       }
     }
