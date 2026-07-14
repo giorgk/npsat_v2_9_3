@@ -383,9 +383,13 @@ void NPSAT_FLOW<dim>::run() {
         unsigned int local_h_count=0;
         for (auto it=head_locally_owned_dofs.begin();it!=head_locally_owned_dofs.end();++it)
         {
-          local_h_min=std::min(local_h_min,h_new[*it]);
-          local_h_max=std::max(local_h_max,h_new[*it]);
-          local_h_sum+=h_new[*it];
+          // Non-const Trilinos operator[] returns a VectorReference proxy in
+          // deal.II 9.3. GCC 5 cannot deduce a common std::min/max template
+          // type from double and that proxy, so materialize the scalar first.
+          const double head_value = static_cast<double>(h_new[*it]);
+          local_h_min=std::min(local_h_min,head_value);
+          local_h_max=std::max(local_h_max,head_value);
+          local_h_sum+=head_value;
           ++local_h_count;
         }
         const double log_h_min=Utilities::MPI::min(local_h_min,mpi_communicator);

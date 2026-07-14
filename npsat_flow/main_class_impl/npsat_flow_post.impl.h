@@ -343,7 +343,9 @@ void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h
         }
         const std::size_t count=std::min<std::size_t>(4,nearest.size());
         std::partial_sort(nearest.begin(), nearest.begin()+count, nearest.end(),
-                          [](const auto &a,const auto &b){return a.first<b.first;});
+                          [](const std::pair<double,double> &a,
+                             const std::pair<double,double> &b)
+                          { return a.first<b.first; });
         double sum_w=0.0, sum_h=0.0;
         for (std::size_t k=0;k<count;++k)
         {
