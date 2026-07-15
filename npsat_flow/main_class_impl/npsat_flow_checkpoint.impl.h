@@ -1,0 +1,204 @@
+#ifndef NPSAT_FLOW_CHECKPOINT_IMPL_H
+#define NPSAT_FLOW_CHECKPOINT_IMPL_H
+
+template <int dim>
+std::string NPSAT_FLOW<dim>::checkpoint_base_path() const
+{
+  return npsat_flow::resolve_relative_path(output_root_path(),
+                                           uo.sim_opt.checkpoint_file);
+}
+
+template <int dim>
+void NPSAT_FLOW<dim>::save_checkpoint(const unsigned int completed_initial_repeats)
+{
+  const std::uint64_t magic = static_cast<std::uint64_t>(0x4e5053415443484bULL); // "NPSATCHK"
+  const std::uint32_t format_version = 1;
+  const unsigned int new_slot = 1u - checkpoint_slot;
+  const std::string base = checkpoint_base_path();
+
+  std::ostringstream rank_name;
+  rank_name << base << ".slot" << new_slot << ".rank"
+            << std::setw(6) << std::setfill('0') << my_rank;
+  const std::string final_name = rank_name.str();
+  const std::string temp_name = final_name + ".tmp";
+
+  int local_ok = 1;
+  {
+    std::ofstream out(temp_name.c_str(), std::ios::out | std::ios::binary | std::ios::trunc);
+    if (!out.good())
+      local_ok = 0;
+    else
+    {
+      const std::uint32_t dim_value = dim;
+      const std::uint32_t degree_value = degree;
+      const std::uint32_t nproc_value = n_proc;
+      const std::uint32_t rank_value = my_rank;
+      const std::uint64_t global_dofs = dof_handler_head.n_dofs();
+      const std::uint64_t local_dofs = head_locally_owned_dofs.n_elements();
+      const std::uint32_t run_step = time_tracking.simulation_step();
+      const std::uint32_t repeat_step = completed_initial_repeats;
+
+      out.write(reinterpret_cast<const char *>(&magic), sizeof(magic));
+      out.write(reinterpret_cast<const char *>(&format_version), sizeof(format_version));
+      out.write(reinterpret_cast<const char *>(&dim_value), sizeof(dim_value));
+      out.write(reinterpret_cast<const char *>(&degree_value), sizeof(degree_value));
+      out.write(reinterpret_cast<const char *>(&nproc_value), sizeof(nproc_value));
+      out.write(reinterpret_cast<const char *>(&rank_value), sizeof(rank_value));
+      out.write(reinterpret_cast<const char *>(&global_dofs), sizeof(global_dofs));
+      out.write(reinterpret_cast<const char *>(&local_dofs), sizeof(local_dofs));
+      out.write(reinterpret_cast<const char *>(&run_step), sizeof(run_step));
+      out.write(reinterpret_cast<const char *>(&repeat_step), sizeof(repeat_step));
+
+      for (auto it = head_locally_owned_dofs.begin();
+           it != head_locally_owned_dofs.end(); ++it)
+      {
+        const std::uint64_t gid = *it;
+        const double value = h_old[*it];
+        out.write(reinterpret_cast<const char *>(&gid), sizeof(gid));
+        out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+      }
+      out.close();
+      if (!out.good())
+        local_ok = 0;
+    }
+  }
+
+  int all_ok = 0;
+  MPI_Allreduce(&local_ok, &all_ok, 1, MPI_INT, MPI_MIN, mpi_communicator);
+  AssertThrow(all_ok == 1, ExcMessage("Failed to write checkpoint rank file: " + temp_name));
+
+  std::remove(final_name.c_str());
+  local_ok = (std::rename(temp_name.c_str(), final_name.c_str()) == 0) ? 1 : 0;
+  MPI_Allreduce(&local_ok, &all_ok, 1, MPI_INT, MPI_MIN, mpi_communicator);
+  AssertThrow(all_ok == 1, ExcMessage("Failed to commit checkpoint rank file: " + final_name));
+  MPI_Barrier(mpi_communicator);
+
+  if (my_rank == 0)
+  {
+    const std::string meta_name = base + ".meta";
+    const std::string temp_meta = meta_name + ".tmp";
+    const std::string backup_meta = meta_name + ".bak";
+    std::ofstream meta(temp_meta.c_str(), std::ios::out | std::ios::trunc);
+    if (meta.good())
+    {
+      meta << "NPSAT_CHECKPOINT 1\n"
+           << new_slot << ' ' << n_proc << ' ' << dof_handler_head.n_dofs() << ' '
+           << dim << ' ' << degree << ' ' << uo.sim_opt.Start_step << ' '
+           << uo.sim_opt.n_steps << ' ' << time_tracking.simulation_step() << ' '
+           << completed_initial_repeats << '\n';
+      meta.close();
+    }
+    local_ok = meta.good() ? 1 : 0;
+    if (local_ok)
+    {
+      std::remove(backup_meta.c_str());
+      std::rename(meta_name.c_str(), backup_meta.c_str());
+      if (std::rename(temp_meta.c_str(), meta_name.c_str()) != 0)
+      {
+        std::rename(backup_meta.c_str(), meta_name.c_str());
+        local_ok = 0;
+      }
+      else
+        std::remove(backup_meta.c_str());
+    }
+  }
+  MPI_Bcast(&local_ok, 1, MPI_INT, 0, mpi_communicator);
+  AssertThrow(local_ok == 1, ExcMessage("Failed to commit checkpoint metadata: " + base + ".meta"));
+  checkpoint_slot = new_slot;
+  pcout << "Checkpoint saved for next simulation step "
+        << time_tracking.simulation_step() << std::endl;
+}
+
+template <int dim>
+unsigned int NPSAT_FLOW<dim>::load_checkpoint()
+{
+  const std::uint64_t expected_magic = static_cast<std::uint64_t>(0x4e5053415443484bULL);
+  const std::string base = checkpoint_base_path();
+  unsigned int slot = 0, saved_nproc = 0, saved_dim = 0, saved_degree = 0;
+  unsigned int saved_start = 0, saved_nsteps = 0, saved_run_step = 0, saved_repeat = 0;
+  std::uint64_t saved_global_dofs = 0;
+  int meta_ok = 1;
+
+  if (my_rank == 0)
+  {
+    std::ifstream meta((base + ".meta").c_str());
+    if (!meta.good())
+    {
+      meta.clear();
+      meta.open((base + ".meta.bak").c_str());
+    }
+    std::string label;
+    unsigned int version = 0;
+    if (!(meta >> label >> version) || label != "NPSAT_CHECKPOINT" || version != 1 ||
+        !(meta >> slot >> saved_nproc >> saved_global_dofs >> saved_dim >> saved_degree
+               >> saved_start >> saved_nsteps >> saved_run_step >> saved_repeat))
+      meta_ok = 0;
+  }
+  MPI_Bcast(&meta_ok, 1, MPI_INT, 0, mpi_communicator);
+  AssertThrow(meta_ok == 1, ExcMessage("Cannot read a valid checkpoint metadata file: " + base + ".meta"));
+  MPI_Bcast(&slot, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&saved_nproc, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  unsigned long long broadcast_global_dofs = static_cast<unsigned long long>(saved_global_dofs);
+  MPI_Bcast(&broadcast_global_dofs, 1, MPI_UNSIGNED_LONG_LONG, 0, mpi_communicator);
+  saved_global_dofs = static_cast<std::uint64_t>(broadcast_global_dofs);
+  MPI_Bcast(&saved_dim, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&saved_degree, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&saved_start, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&saved_nsteps, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&saved_run_step, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&saved_repeat, 1, MPI_UNSIGNED, 0, mpi_communicator);
+
+  AssertThrow(saved_nproc == n_proc, ExcMessage("Checkpoint requires the same MPI process count."));
+  AssertThrow(saved_global_dofs == dof_handler_head.n_dofs(), ExcMessage("Checkpoint head DoF count does not match the current mesh."));
+  AssertThrow(saved_dim == dim && saved_degree == degree, ExcMessage("Checkpoint dimension or finite-element degree does not match."));
+  AssertThrow(saved_start == static_cast<unsigned int>(uo.sim_opt.Start_step), ExcMessage("Checkpoint Simulation.Start_step does not match."));
+  AssertThrow(saved_nsteps == static_cast<unsigned int>(uo.sim_opt.n_steps), ExcMessage("Checkpoint Simulation.Nsteps does not match."));
+  AssertThrow(saved_repeat <= uo.sim_opt.initial_step_repeats, ExcMessage("Checkpoint initial repeat count is invalid for this configuration."));
+
+  std::ostringstream rank_name;
+  rank_name << base << ".slot" << slot << ".rank"
+            << std::setw(6) << std::setfill('0') << my_rank;
+  std::ifstream in(rank_name.str().c_str(), std::ios::in | std::ios::binary);
+  AssertThrow(in.good(), ExcMessage("Cannot open checkpoint rank file: " + rank_name.str()));
+
+  std::uint64_t magic = 0, global_dofs = 0, local_dofs = 0;
+  std::uint32_t format_version = 0, file_dim = 0, file_degree = 0;
+  std::uint32_t file_nproc = 0, file_rank = 0, file_run_step = 0, file_repeat = 0;
+  in.read(reinterpret_cast<char *>(&magic), sizeof(magic));
+  in.read(reinterpret_cast<char *>(&format_version), sizeof(format_version));
+  in.read(reinterpret_cast<char *>(&file_dim), sizeof(file_dim));
+  in.read(reinterpret_cast<char *>(&file_degree), sizeof(file_degree));
+  in.read(reinterpret_cast<char *>(&file_nproc), sizeof(file_nproc));
+  in.read(reinterpret_cast<char *>(&file_rank), sizeof(file_rank));
+  in.read(reinterpret_cast<char *>(&global_dofs), sizeof(global_dofs));
+  in.read(reinterpret_cast<char *>(&local_dofs), sizeof(local_dofs));
+  in.read(reinterpret_cast<char *>(&file_run_step), sizeof(file_run_step));
+  in.read(reinterpret_cast<char *>(&file_repeat), sizeof(file_repeat));
+  AssertThrow(in.good() && magic == expected_magic && format_version == 1,
+              ExcMessage("Invalid checkpoint rank-file header."));
+  AssertThrow(file_dim == dim && file_degree == degree && file_nproc == n_proc &&
+              file_rank == my_rank && global_dofs == dof_handler_head.n_dofs() &&
+              local_dofs == head_locally_owned_dofs.n_elements() &&
+              file_run_step == saved_run_step && file_repeat == saved_repeat,
+              ExcMessage("Checkpoint rank-file metadata does not match."));
+
+  h_old = 0.0;
+  for (std::uint64_t i = 0; i < local_dofs; ++i)
+  {
+    std::uint64_t gid = 0;
+    double value = 0.0;
+    in.read(reinterpret_cast<char *>(&gid), sizeof(gid));
+    in.read(reinterpret_cast<char *>(&value), sizeof(value));
+    AssertThrow(in.good() && head_locally_owned_dofs.is_element(gid),
+                ExcMessage("Checkpoint contains an invalid locally owned head DoF."));
+    h_old[gid] = value;
+  }
+  h_old.compress(VectorOperation::insert);
+  time_tracking.restore_simulation_step(saved_run_step);
+  checkpoint_slot = slot;
+  pcout << "Checkpoint loaded; next simulation step " << saved_run_step
+        << ", completed initial repeats " << saved_repeat << std::endl;
+  return saved_repeat;
+}
+
+#endif
