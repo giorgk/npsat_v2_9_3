@@ -66,6 +66,9 @@ namespace npsat_flow {
         int Start_step = 0;
         std::string delta_time_file;
         bool confined = false;
+        unsigned int initial_step_repeats = 1;
+        bool restart_from_checkpoint = false;
+        std::string checkpoint_file = "npsat_flow.chk";
     };
 
     struct Solver_uo {

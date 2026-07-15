@@ -6,6 +6,7 @@
 #define NPSAT_FLOW_PREPARE_IMPL_H
 
 //using namespace dealii;
+// I will put here the preparation methods of NPSAT_FLOW as well as helper functions to keep the main npsat_v2.cpp clean.
 
 template<int dim>
 void NPSAT_FLOW<dim>::set_simulation_data() {
@@ -447,6 +448,42 @@ void NPSAT_FLOW<dim>::save_triangulation() const {
   }
 
   MPI_Barrier(mpi_communicator);
+}
+
+template <int dim>
+std::string NPSAT_FLOW<dim>::output_root_path() const
+{
+  return npsat_flow::resolve_relative_path(uo.main_path, uo.output_path);
+}
+
+template <int dim>
+std::string NPSAT_FLOW<dim>::output_prefix_path() const
+{
+  return npsat_flow::join_paths(output_root_path(), uo.output_prefix);
+}
+
+template <int dim>
+void NPSAT_FLOW<dim>::align_time_dependent_data()
+{
+  const unsigned int step = time_tracking.forcing_step();
+
+  gw_recharge.set_time_index(step);
+  dirichlet_bc.set_time_index(step);
+  ghb_bc.set_time_index(step);
+
+  hgeo_prop.set_time_index(0);
+  streams.set_time_step_number(static_cast<int>(step));
+  mnwells.set_time_step_number(static_cast<int>(step));
+}
+
+template<int dim>
+const std::string &NPSAT_FLOW<dim>::cellid_string_from_active_index(const unsigned int aidx) const
+{
+  auto it = std::lower_bound(local_cell_id_strings.begin(), local_cell_id_strings.end(),
+                             aidx,
+                             [](const auto &p, unsigned int v){ return p.first < v; });
+  AssertThrow(it != local_cell_id_strings.end() && it->first == aidx, ExcInternalError());
+  return it->second;
 }
 
 #endif //NPSAT_FLOW_PREPARE_IMPL_H

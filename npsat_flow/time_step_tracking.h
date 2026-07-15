@@ -63,7 +63,7 @@ namespace npsat_flow{
                 throw std::runtime_error("TimeStepTracker: delta_t has not been loaded.");
 
             nsteps_sim = n_simulation_steps;
-            start_step = start_file_step % delta_t.size();
+            start_step = start_file_step;
             isim = 0;
         }
 
@@ -83,9 +83,26 @@ namespace npsat_flow{
             return isim;
         }
 
+        unsigned int forcing_step() const
+        {
+            return start_step + isim;
+        }
+
+        unsigned int start_file_step() const
+        {
+            return start_step;
+        }
+
+        void restore_simulation_step(const unsigned int next_simulation_step)
+        {
+            if (next_simulation_step > nsteps_sim)
+                throw std::runtime_error("TimeStepTracker: checkpoint step exceeds Simulation.Nsteps.");
+            isim = next_simulation_step;
+        }
+
         unsigned int file_step() const
         {
-            return static_cast<unsigned int>((start_step + isim) % delta_t.size());
+            return static_cast<unsigned int>(forcing_step() % delta_t.size());
         }
 
         double duration() const

@@ -33,7 +33,7 @@ namespace npsat_flow {
         : mpi_communicator(MPI_COMM_WORLD),
           pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
     {
-        Version = "0.0.03";
+        Version = "0.0.04";
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
@@ -131,6 +131,9 @@ namespace npsat_flow {
             ("Simulation.Start_step", po::value<int>()->default_value(0), "Start time step")
             ("Simulation.Delta_time_file", po::value<std::string>(), "Filename with time step data")
             ("Simulation.Confined", po::value<int>()->default_value(0), "Treat aquifer as confined and disable nonlinear unconfined K/Sy behavior")
+            ("Simulation.Initial_step_repeats", po::value<unsigned int>()->default_value(1), "Number of accepted solves of the first time step before advancing")
+            ("Simulation.Restart_from_checkpoint", po::value<int>()->default_value(0), "Restart from the last committed checkpoint")
+            ("Simulation.Checkpoint_file", po::value<std::string>()->default_value("npsat_flow.chk"), "Checkpoint basename; relative paths use Paths.Output")
 
             //[Solver]
             ("Solver.System_iterations", po::value<int>()->default_value(15000), "Iterations for system solver")
@@ -285,6 +288,17 @@ namespace npsat_flow {
                     uo.sim_opt.Start_step = vm_cfg["Simulation.Start_step"].as<int>();
                     uo.sim_opt.delta_time_file = vm_cfg["Simulation.Delta_time_file"].as<std::string>();
                     uo.sim_opt.confined = vm_cfg["Simulation.Confined"].as<int>() == 1;
+                    uo.sim_opt.initial_step_repeats = vm_cfg["Simulation.Initial_step_repeats"].as<unsigned int>();
+                    uo.sim_opt.restart_from_checkpoint = vm_cfg["Simulation.Restart_from_checkpoint"].as<int>() == 1;
+                    uo.sim_opt.checkpoint_file = vm_cfg["Simulation.Checkpoint_file"].as<std::string>();
+                    if (uo.sim_opt.n_steps < 1)
+                        throw std::runtime_error("Simulation.Nsteps must be at least 1.");
+                    if (uo.sim_opt.Start_step < 0)
+                        throw std::runtime_error("Simulation.Start_step must not be negative.");
+                    if (uo.sim_opt.initial_step_repeats == 0)
+                        throw std::runtime_error("Simulation.Initial_step_repeats must be at least 1.");
+                    if (uo.sim_opt.checkpoint_file.empty())
+                        throw std::runtime_error("Simulation.Checkpoint_file must not be empty.");
                 }
 
                 {//Solver
