@@ -265,79 +265,87 @@ void NPSAT_FLOW<dim>::setup_local_cell_well_link() {
             const double loss_denom = 2*numbers::PI * b * KK;
             const double ln_ro_rw = std::log(ro/well_ptr->rw);
 
-            /*
-             * Interpret well_ptr->Rskin as:
-             *   0 < Rskin <= 1 : fraction of element diameter
-             *   Rskin > 1      : length units
-             *
-             * For fraction input, constrain to [0.1, 0.5].
-             * Then force the physical skin radius to be larger than rw.
-             */
-
-            const double Rskin_fraction_min = 0.1;
-            const double Rskin_fraction_max = 0.5;
-            const double Rskin_rw_factor    = 1.1;
-            const double Rskin_ro_factor    = 0.8;
-
-            double Rskin_length = well_ptr->Rskin;
-            if (well_ptr->Rskin > 0.0 && well_ptr->Rskin <= 1.0) {
-                double Rskin_fraction = well_ptr->Rskin;
-                if (Rskin_fraction < Rskin_fraction_min)
-                {
-                    std::cout << "Warning: well " << well_id
-                          << " has Rskin fraction " << Rskin_fraction
-                          << " smaller than " << Rskin_fraction_min
-                          << ". Using " << Rskin_fraction_min << "." << std::endl;
-
-                    Rskin_fraction = Rskin_fraction_min;
-                }
-
-                if (Rskin_fraction > Rskin_fraction_max)
-                {
-                    pcout << "Warning: well " << well_id
-                          << " has Rskin fraction " << Rskin_fraction
-                          << " larger than " << Rskin_fraction_max
-                          << ". Using " << Rskin_fraction_max << "." << std::endl;
-
-                    Rskin_fraction = Rskin_fraction_max;
-                }
+            double D;
+            if (well_ptr->Rskin <= 0.0 || well_ptr->Kskin <= 0.0) {
+                //-----------------------------------------------------
+                // THIEM
+                //-----------------------------------------------------
+                D = ln_ro_rw;
+            }
+            else {
+                //-----------------------------------------------------
+                // SKIN
+                //-----------------------------------------------------
 
                 /*
-                 * Approximate element diameter from Peaceman radius:
-                 * ro = 0.14 * sqrt(dx^2 + dy^2)
-                 * so element_diameter = sqrt(dx^2 + dy^2) = ro / 0.14
+                 * Interpret well_ptr->Rskin as:
+                 *   0 < Rskin <= 1 : fraction of element diameter
+                 *   Rskin > 1      : length units
+                 *
+                 * For fraction input, constrain to [0.1, 0.5].
+                 * Then force the physical skin radius to be larger than rw.
                  */
-                const double element_diameter = ro / 0.14;
-                Rskin_length = Rskin_fraction * element_diameter;
+                const double Rskin_fraction_min = 0.1;
+                const double Rskin_fraction_max = 0.5;
+                const double Rskin_rw_factor    = 1.1;
+                const double Rskin_ro_factor    = 0.8;
+
+                double Rskin_length = well_ptr->Rskin;
+
+                if (well_ptr->Rskin <= 1.0) {
+                    double Rskin_fraction = well_ptr->Rskin;
+
+                    if (Rskin_fraction < Rskin_fraction_min) {
+                        std::cout << "Warning: well " << well_id
+                              << " has Rskin fraction " << Rskin_fraction
+                              << " smaller than " << Rskin_fraction_min
+                              << ". Using " << Rskin_fraction_min << "." << std::endl;
+
+                        Rskin_fraction = Rskin_fraction_min;
+                    }
+
+                    if (Rskin_fraction > Rskin_fraction_max) {
+                        pcout << "Warning: well " << well_id
+                              << " has Rskin fraction " << Rskin_fraction
+                              << " larger than " << Rskin_fraction_max
+                              << ". Using " << Rskin_fraction_max << "." << std::endl;
+
+                        Rskin_fraction = Rskin_fraction_max;
+                    }
+                    /*
+                     * Approximate element diameter from Peaceman radius:
+                     * ro = 0.14 * sqrt(dx^2 + dy^2)
+                     * so element_diameter = sqrt(dx^2 + dy^2) = ro / 0.14
+                     */
+                    const double element_diameter = ro / 0.14;
+                    Rskin_length = Rskin_fraction * element_diameter;
+                }
+
+                const double Rskin_min = Rskin_rw_factor * well_ptr->rw;
+                const double Rskin_max = Rskin_ro_factor * ro;
+
+                double Rskin_eff = std::max(Rskin_length, Rskin_min);
+                if (Rskin_eff > Rskin_max)
+                {
+                    pcout << "Warning: well " << well_id
+                          << " has effective Rskin " << Rskin_eff
+                          << " larger than " << Rskin_max
+                          << " = " << Rskin_ro_factor << "*ro. Using " << Rskin_max
+                          << "." << std::endl;
+
+                    Rskin_eff = Rskin_max;
+                }
+                AssertThrow(Rskin_eff > well_ptr->rw, ExcMessage("Invalid Rskin_eff: skin radius must be larger than rw."));
+                AssertThrow(Rskin_eff < ro, ExcMessage("Invalid Rskin_eff: skin radius must be smaller than ro."));
+                const double skin_min = -0.8 * ln_ro_rw;  // stimulation can reduce but not erase aquifer loss
+                double skin = (KK*b / (well_ptr->Kskin * bw) - 1.0)*std::log(Rskin_eff/well_ptr->rw);
+                skin = std::max(skin, skin_min);
+                D = ln_ro_rw+ skin;
+
+                const double Dmin = 0.5; // pick 0.2–1.0; 0.5 is a good start
+                if (D < Dmin)
+                    D = Dmin;
             }
-
-            const double Rskin_min = Rskin_rw_factor * well_ptr->rw;
-            const double Rskin_max = Rskin_ro_factor * ro;
-
-            double Rskin_eff = std::max(Rskin_length, Rskin_min);
-            if (Rskin_eff > Rskin_max)
-            {
-                pcout << "Warning: well " << well_id
-                      << " has effective Rskin " << Rskin_eff
-                      << " larger than " << Rskin_max
-                      << " = " << Rskin_ro_factor << "*ro. Using " << Rskin_max
-                      << "." << std::endl;
-
-                Rskin_eff = Rskin_max;
-            }
-
-            AssertThrow(Rskin_eff > well_ptr->rw, ExcMessage("Invalid Rskin_eff: skin radius must be larger than rw."));
-
-            AssertThrow(Rskin_eff < ro, ExcMessage("Invalid Rskin_eff: skin radius must be smaller than ro."));
-
-            const double skin_min = -0.8 * ln_ro_rw;  // stimulation can reduce but not erase aquifer loss
-            double skin = (KK*b / (well_ptr->Kskin * bw) - 1.0)*std::log(Rskin_eff/well_ptr->rw);
-            skin = std::max(skin, skin_min);
-            double D = ln_ro_rw+ skin;
-
-            const double Dmin = 0.5; // pick 0.2–1.0; 0.5 is a good start
-            if (D < Dmin)
-                D = Dmin;
             const double cwc = loss_denom / D;
 
             // pcout << "well " << well->global_index << ", \t"
