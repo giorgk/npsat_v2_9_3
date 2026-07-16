@@ -50,6 +50,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
+#include <cmath>
+#include <limits>
 
 #include "npsat_flow/flow_input.h"
 #include "npsat_flow/time_step_tracking.h"
@@ -77,6 +79,13 @@ public:
     void run();
 
 private:
+    enum CheckpointPhase
+    {
+        checkpoint_phase_spinup = 0,
+        checkpoint_phase_simulation = 1,
+        checkpoint_phase_finished = 2
+    };
+
     void set_simulation_data();
     void refine_triangulation();
     void initialize_local_cell_slots();
@@ -88,7 +97,7 @@ private:
     void update_local_cell_well_link_owners();
     void build_trace_well_coupling_maps();
     void initialize_initial_head();
-    void save_checkpoint(const unsigned int completed_initial_repeats);
+    void save_checkpoint(const unsigned int completed_spinup_iterations);
     unsigned int load_checkpoint();
     std::string checkpoint_base_path() const;
 
@@ -292,9 +301,9 @@ void NPSAT_FLOW<dim>::run() {
     }
 
     setup_system();
-    unsigned int completed_initial_repeats = 0;
+    unsigned int completed_spinup_iterations = 0;
     if (uo.sim_opt.restart_from_checkpoint)
-        completed_initial_repeats = load_checkpoint();
+        completed_spinup_iterations = load_checkpoint();
     else
         initialize_initial_head();
 
@@ -320,17 +329,17 @@ void NPSAT_FLOW<dim>::run() {
     }
 
     while (!time_tracking.done()) {
-        const unsigned int repeat_count = (time_tracking.simulation_step() == 0 ? uo.sim_opt.initial_step_repeats : 1u);
-        const unsigned int repeat_begin = (time_tracking.simulation_step() == 0 ? completed_initial_repeats : 0u);
+        const unsigned int spinup_iteration_limit = (time_tracking.simulation_step() == 0 ? uo.sim_opt.spinup_iterations : 1u);
+        const unsigned int spinup_iteration_begin = (time_tracking.simulation_step() == 0 ? completed_spinup_iterations : 0u);
 
-        for (unsigned int initial_repeat = repeat_begin; initial_repeat < repeat_count; ++initial_repeat)
+        for (unsigned int spinup_iteration = spinup_iteration_begin; spinup_iteration < spinup_iteration_limit; ++spinup_iteration)
         {
             pcout << "\n==============================================" << std::endl;
             pcout << "Time step " << time_tracking.simulation_step()
                   << " of " << time_tracking.n_sim_steps() << std::endl;
-            if (time_tracking.simulation_step() == 0 && repeat_count > 1)
-                pcout << "Initial stabilization solve " << (initial_repeat + 1)
-                      << " of " << repeat_count << std::endl;
+            if (time_tracking.simulation_step() == 0 && spinup_iteration_limit > 1)
+                pcout << "Spin-up solve " << (spinup_iteration + 1)
+                      << " of at most " << spinup_iteration_limit << std::endl;
 
             align_time_dependent_data();
 
@@ -501,13 +510,44 @@ void NPSAT_FLOW<dim>::run() {
             AssertThrow(step_converged,
                         ExcMessage("Nonlinear solve did not converge; time was not advanced and the checkpoint was not updated."));
 
-            const bool final_repeat = (initial_repeat + 1 == repeat_count);
-            if (!final_repeat)
+            double spinup_head_change = 0.0;
+            bool spinup_converged = false;
+            if (time_tracking.simulation_step() == 0)
+            {
+                double local_spinup_head_change = 0.0;
+                for (auto dof = head_locally_owned_dofs.begin(); dof != head_locally_owned_dofs.end(); ++dof)
+                {
+                    const double head_change = std::abs(h_new[*dof] - h_old[*dof]);
+                    if (!std::isfinite(head_change))
+                        local_spinup_head_change = std::numeric_limits<double>::infinity();
+                    else
+                        local_spinup_head_change = std::max(local_spinup_head_change, head_change);
+                }
+                spinup_head_change = Utilities::MPI::max(local_spinup_head_change, mpi_communicator);
+                spinup_converged = spinup_head_change < uo.sim_opt.spinup_tolerance;
+            }
+            const bool spinup_limit_reached = (spinup_iteration + 1 == spinup_iteration_limit);
+            const bool final_spinup_iteration = spinup_converged || spinup_limit_reached;
+
+            if (time_tracking.simulation_step() == 0)
+                pcout << "Spin-up max |delta h| = " << std::scientific
+                      << spinup_head_change << " m; tolerance = "
+                      << uo.sim_opt.spinup_tolerance << " m"
+                      << std::defaultfloat << std::endl;
+
+            if (!final_spinup_iteration)
             {
                 h_old = h_new;
-                save_checkpoint(initial_repeat + 1);
+                save_checkpoint(spinup_iteration + 1);
                 continue;
             }
+
+            if (spinup_converged)
+                pcout << "Spin-up converged after " << (spinup_iteration + 1)
+                      << " solves." << std::endl;
+            else if (time_tracking.simulation_step() == 0 && spinup_iteration_limit > 1)
+                pcout << "Spin-up iteration limit reached after "
+                      << spinup_iteration_limit << " solves." << std::endl;
 
             compute_fluxes();
 
@@ -535,10 +575,10 @@ void NPSAT_FLOW<dim>::run() {
             save_checkpoint(0);
             //break;
         }
-        completed_initial_repeats = 0;
+        completed_spinup_iterations = 0;
     }
-      MPI_Barrier(mpi_communicator);
-      pcout << "Simulation Finished" << std::endl;
+    MPI_Barrier(mpi_communicator);
+    pcout << "Simulation Finished" << std::endl;
 }
 
 

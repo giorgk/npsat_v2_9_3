@@ -66,7 +66,8 @@ namespace npsat_flow {
         int Start_step = 0;
         std::string delta_time_file;
         bool confined = false;
-        unsigned int initial_step_repeats = 1;
+        unsigned int spinup_iterations = 1;
+        double spinup_tolerance = 1.0e-8;
         bool restart_from_checkpoint = false;
         std::string checkpoint_file = "npsat_flow.chk";
     };
