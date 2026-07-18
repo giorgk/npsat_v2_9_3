@@ -515,6 +515,7 @@ void NPSAT_FLOW<dim>::run() {
             if (time_tracking.simulation_step() == 0)
             {
                 double local_spinup_head_change = 0.0;
+
                 for (auto dof = head_locally_owned_dofs.begin(); dof != head_locally_owned_dofs.end(); ++dof)
                 {
                     const double head_change = std::abs(h_new[*dof] - h_old[*dof]);
@@ -573,7 +574,10 @@ void NPSAT_FLOW<dim>::run() {
             h_old = h_new;
             time_tracking.advance();
             save_checkpoint(0);
-            //break;
+            // Re-enter the outer loop so TimeStepTracker::done() is checked after
+            // advancing. Otherwise a converged spin-up exits step 0 but continues
+            // through the stale spin-up for-loop limit.
+            break;
         }
         completed_spinup_iterations = 0;
     }

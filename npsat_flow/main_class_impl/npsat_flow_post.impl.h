@@ -695,6 +695,36 @@ void NPSAT_FLOW<dim>::compute_fluxes(){
                     //         << ", ze=" << link.ze
                     //         << ", Qe_cond=" << Qe_cond
                     //         << ", Qe_test=" << Qe_test << std::endl;
+
+                    // std::cout << std::setprecision(15);
+                    // std::cout
+                    //     << "Well " << link.well_global_index
+                    //     << "  Cell " << trace_cell->active_cell_index()
+                    //     << "\n"
+                    //     << "H_known = " << H_known
+                    //     << "  ae·lambda = " << alpha_dot_lambda
+                    //     << "\n"
+                    //     << "h_e      = " << h_e
+                    //     << "\n"
+                    //     << "h_local  = " << h_local
+                    //     << "\n"
+                    //     << "h_well   = " << hw
+                    //     << "\n"
+                    //     << "CWC      = " << cwc
+                    //     << "\n"
+                    //     << "Qe       = " << link.Qe
+                    //     << "\n"
+                    //     << "PredQ    = " << cwc * (hw - h_e)
+                    //     << std::endl;
+                    // std::cout
+                    //     << "h_local - h_e = " << (h_local - h_e)
+                    //     << "\n"
+                    //     << "h_local - hw  = " << (h_local - hw)
+                    //     << std::endl;
+                    // std::cout
+                    //     << "ze = " << link.ze
+                    //     << "  screen_length = " << link.sl
+                    //     << std::endl;
                 }
             }
         }
