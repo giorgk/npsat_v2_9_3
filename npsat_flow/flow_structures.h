@@ -66,10 +66,18 @@ namespace npsat_flow {
         int Start_step = 0;
         std::string delta_time_file;
         bool confined = false;
-        unsigned int spinup_iterations = 1;
-        double spinup_tolerance = 1.0e-8;
         bool restart_from_checkpoint = false;
         std::string checkpoint_file = "npsat_flow.chk";
+    };
+
+    struct Spinup_uo {
+        unsigned int iterations = 30;                    // hard maximum solves
+        double tolerance = 1.0;                          // maximum-head guard [L]
+        unsigned int minimum_solves = 5;
+        double flux_relative_l2_tolerance = 1.0e-2;
+        double rms_head_tolerance = 1.0e-1;              // [L]
+        unsigned int consecutive_passes = 3;
+        unsigned int stable_dry_well_solves = 3;
     };
 
     struct Solver_uo {
@@ -164,6 +172,7 @@ namespace npsat_flow {
 
         BC_uo bndr_cond;
         Sim_uo sim_opt;
+        Spinup_uo spin_uo;
         Solver_uo solver_opt;
         NonlinearControls NLC;
         int verbose_level = 0;

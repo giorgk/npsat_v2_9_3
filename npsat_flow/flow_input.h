@@ -131,10 +131,17 @@ namespace npsat_flow {
             ("Simulation.Start_step", po::value<int>()->default_value(0), "Start time step")
             ("Simulation.Delta_time_file", po::value<std::string>(), "Filename with time step data")
             ("Simulation.Confined", po::value<int>()->default_value(0), "Treat aquifer as confined and disable nonlinear unconfined K/Sy behavior")
-            ("Simulation.SpinupIterations", po::value<unsigned int>()->default_value(1), "Maximum number of accepted first-step spin-up solves")
-            ("Simulation.SpinupTolerance", po::value<double>()->default_value(1.0e-8), "Stop spin-up when the global maximum absolute head change is below this value")
             ("Simulation.Restart_from_checkpoint", po::value<int>()->default_value(0), "Restart from the last committed checkpoint")
             ("Simulation.Checkpoint_file", po::value<std::string>()->default_value("npsat_flow.chk"), "Checkpoint basename; relative paths use Paths.Output")
+
+            //[Spinup]
+            ("Spinup.Iterations", po::value<unsigned int>()->default_value(30), "Maximum number of accepted first-step spin-up solves")
+            ("Spinup.Tolerance", po::value<double>()->default_value(1.0), "Maximum absolute head-change guard for spin-up convergence")
+            ("Spinup.MinimumSolves", po::value<unsigned int>()->default_value(5), "Minimum number of spin-up solves before convergence is allowed")
+            ("Spinup.FluxRelativeL2Tolerance", po::value<double>()->default_value(1.0e-2), "Maximum relative L2 change between consecutive recovered spin-up flux fields")
+            ("Spinup.RMSHeadTolerance", po::value<double>()->default_value(1.0e-1), "Maximum RMS head change between consecutive spin-up solves")
+            ("Spinup.ConsecutivePasses", po::value<unsigned int>()->default_value(3), "Required consecutive solves satisfying all spin-up convergence metrics")
+            ("Spinup.StableDryWellSolves", po::value<unsigned int>()->default_value(3), "Required consecutive solves with an unchanged dry-well count")
 
             //[Solver]
             ("Solver.System_iterations", po::value<int>()->default_value(15000), "Iterations for system solver")
@@ -289,20 +296,45 @@ namespace npsat_flow {
                     uo.sim_opt.Start_step = vm_cfg["Simulation.Start_step"].as<int>();
                     uo.sim_opt.delta_time_file = vm_cfg["Simulation.Delta_time_file"].as<std::string>();
                     uo.sim_opt.confined = vm_cfg["Simulation.Confined"].as<int>() == 1;
-                    uo.sim_opt.spinup_iterations = vm_cfg["Simulation.SpinupIterations"].as<unsigned int>();
-                    uo.sim_opt.spinup_tolerance = vm_cfg["Simulation.SpinupTolerance"].as<double>();
                     uo.sim_opt.restart_from_checkpoint = vm_cfg["Simulation.Restart_from_checkpoint"].as<int>() == 1;
                     uo.sim_opt.checkpoint_file = vm_cfg["Simulation.Checkpoint_file"].as<std::string>();
                     if (uo.sim_opt.n_steps < 1)
                         throw std::runtime_error("Simulation.Nsteps must be at least 1.");
                     if (uo.sim_opt.Start_step < 0)
                         throw std::runtime_error("Simulation.Start_step must not be negative.");
-                    if (uo.sim_opt.spinup_iterations == 0)
-                        throw std::runtime_error("Simulation.SpinupIterations must be at least 1.");
-                    if (!(uo.sim_opt.spinup_tolerance > 0.0))
-                        throw std::runtime_error("Simulation.SpinupTolerance must be greater than zero.");
                     if (uo.sim_opt.checkpoint_file.empty())
                         throw std::runtime_error("Simulation.Checkpoint_file must not be empty.");
+                }
+
+                {//Spinup
+                    uo.spin_uo.iterations = vm_cfg["Spinup.Iterations"].as<unsigned int>();
+                    uo.spin_uo.tolerance = vm_cfg["Spinup.Tolerance"].as<double>();
+                    uo.spin_uo.minimum_solves = vm_cfg["Spinup.MinimumSolves"].as<unsigned int>();
+                    uo.spin_uo.flux_relative_l2_tolerance = vm_cfg["Spinup.FluxRelativeL2Tolerance"].as<double>();
+                    uo.spin_uo.rms_head_tolerance = vm_cfg["Spinup.RMSHeadTolerance"].as<double>();
+                    uo.spin_uo.consecutive_passes = vm_cfg["Spinup.ConsecutivePasses"].as<unsigned int>();
+                    uo.spin_uo.stable_dry_well_solves = vm_cfg["Spinup.StableDryWellSolves"].as<unsigned int>();
+
+                    if (uo.spin_uo.iterations == 0)
+                        throw std::runtime_error("Spinup.Iterations must be at least 1.");
+                    if (uo.spin_uo.minimum_solves == 0 ||
+                        uo.spin_uo.minimum_solves > uo.spin_uo.iterations)
+                        throw std::runtime_error("Spinup.MinimumSolves must be between 1 and Spinup.Iterations.");
+                    if (!(uo.spin_uo.tolerance > 0.0))
+                        throw std::runtime_error("Spinup.Tolerance must be greater than zero.");
+                    if (!(uo.spin_uo.flux_relative_l2_tolerance > 0.0))
+                        throw std::runtime_error("Spinup.FluxRelativeL2Tolerance must be greater than zero.");
+                    if (!(uo.spin_uo.rms_head_tolerance > 0.0))
+                        throw std::runtime_error("Spinup.RMSHeadTolerance must be greater than zero.");
+                    if (uo.spin_uo.consecutive_passes == 0)
+                        throw std::runtime_error("Spinup.ConsecutivePasses must be at least 1.");
+                    if (uo.spin_uo.stable_dry_well_solves == 0)
+                        throw std::runtime_error("Spinup.StableDryWellSolves must be at least 1.");
+                    if (uo.spin_uo.consecutive_passes >
+                        uo.spin_uo.iterations - uo.spin_uo.minimum_solves + 1)
+                        throw std::runtime_error("Spinup.Iterations is too small to permit the requested Spinup.ConsecutivePasses after Spinup.MinimumSolves.");
+                    if (uo.spin_uo.stable_dry_well_solves > uo.spin_uo.iterations)
+                        throw std::runtime_error("Spinup.StableDryWellSolves must not exceed Spinup.Iterations.");
                 }
 
                 {//Solver

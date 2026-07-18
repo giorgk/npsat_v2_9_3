@@ -179,8 +179,8 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   {
     AssertThrow(saved_run_step == 0 && saved_repeat > 0,
                 ExcMessage("Spin-up checkpoint contains inconsistent counters."));
-    AssertThrow(saved_repeat < uo.sim_opt.spinup_iterations,
-                ExcMessage("Simulation.SpinupIterations must be greater than the completed spin-up iteration stored in the checkpoint."));
+    AssertThrow(saved_repeat < uo.spin_uo.iterations,
+                ExcMessage("Spinup.Iterations must be greater than the completed spin-up iteration stored in the checkpoint."));
   }
   else
   {
@@ -234,7 +234,7 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   if (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup))
     pcout << "Spin-up checkpoint loaded; resuming at spin-up iteration "
           << (saved_repeat + 1) << " of at most "
-          << uo.sim_opt.spinup_iterations << std::endl;
+          << uo.spin_uo.iterations << std::endl;
   else
     pcout << "Simulation checkpoint loaded; next simulation step "
           << saved_run_step << " of " << uo.sim_opt.n_steps

@@ -320,6 +320,10 @@ void NPSAT_FLOW<dim>::run() {
     TrilinosWrappers::MPI::Vector previous_spinup_flux_owned;
     previous_spinup_flux_owned.reinit(flux_locally_owned_dofs, mpi_communicator);
     bool have_previous_spinup_flux = false;
+    bool have_previous_spinup_dry_well_count = false;
+    unsigned int previous_spinup_dry_well_count = 0;
+    unsigned int stable_spinup_dry_well_solves = 0;
+    unsigned int consecutive_spinup_passes = 0;
 
     double update_norm;
     double ref_norm;
@@ -340,7 +344,7 @@ void NPSAT_FLOW<dim>::run() {
     }
 
     while (!time_tracking.done()) {
-        const unsigned int spinup_iteration_limit = (time_tracking.simulation_step() == 0 ? uo.sim_opt.spinup_iterations : 1u);
+        const unsigned int spinup_iteration_limit = (time_tracking.simulation_step() == 0 ? uo.spin_uo.iterations : 1u);
         const unsigned int spinup_iteration_begin = (time_tracking.simulation_step() == 0 ? completed_spinup_iterations : 0u);
 
         for (unsigned int spinup_iteration = spinup_iteration_begin; spinup_iteration < spinup_iteration_limit; ++spinup_iteration)
@@ -535,6 +539,7 @@ void NPSAT_FLOW<dim>::run() {
             double spinup_flux_change_max = 0.0;
             double spinup_flux_change_rms = 0.0;
             double spinup_flux_change_relative_l2 = 0.0;
+            bool spinup_metrics_pass = false;
             bool spinup_converged = false;
             if (time_tracking.simulation_step() == 0)
             {
@@ -548,7 +553,35 @@ void NPSAT_FLOW<dim>::run() {
                                                     spinup_flux_change_max,
                                                     spinup_flux_change_rms,
                                                     spinup_flux_change_relative_l2);
-                spinup_converged = spinup_head_change < uo.sim_opt.spinup_tolerance;
+
+                if (!have_previous_spinup_dry_well_count ||
+                    last_dry_well_count != previous_spinup_dry_well_count)
+                    stable_spinup_dry_well_solves = 1;
+                else
+                    ++stable_spinup_dry_well_solves;
+                previous_spinup_dry_well_count = last_dry_well_count;
+                have_previous_spinup_dry_well_count = true;
+
+                const unsigned int completed_solves = spinup_iteration + 1;
+                spinup_metrics_pass =
+                    have_previous_spinup_flux &&
+                    completed_solves >= uo.spin_uo.minimum_solves &&
+                    std::isfinite(spinup_head_change) &&
+                    std::isfinite(spinup_head_change_rms) &&
+                    std::isfinite(spinup_flux_change_relative_l2) &&
+                    spinup_head_change <= uo.spin_uo.tolerance &&
+                    spinup_head_change_rms <= uo.spin_uo.rms_head_tolerance &&
+                    spinup_flux_change_relative_l2 <=
+                        uo.spin_uo.flux_relative_l2_tolerance &&
+                    stable_spinup_dry_well_solves >=
+                        uo.spin_uo.stable_dry_well_solves;
+
+                if (spinup_metrics_pass)
+                    ++consecutive_spinup_passes;
+                else
+                    consecutive_spinup_passes = 0;
+                spinup_converged =
+                    consecutive_spinup_passes >= uo.spin_uo.consecutive_passes;
             }
             const bool spinup_limit_reached = (spinup_iteration + 1 == spinup_iteration_limit);
             const bool final_spinup_iteration = spinup_converged || spinup_limit_reached;
@@ -560,8 +593,9 @@ void NPSAT_FLOW<dim>::run() {
                     std::abs(last_well_total);
                 pcout << "Spin-up diagnostics:" << std::scientific
                       << "\n  max |delta h| = " << spinup_head_change
-                      << " m; tolerance = " << uo.sim_opt.spinup_tolerance << " m"
-                      << "\n  RMS delta h = " << spinup_head_change_rms << " m"
+                      << " m; guard = " << uo.spin_uo.tolerance << " m"
+                      << "\n  RMS delta h = " << spinup_head_change_rms
+                      << " m; tolerance = " << uo.spin_uo.rms_head_tolerance << " m"
                       << "\n  storage volume change = " << spinup_storage_volume_change
                       << " volume units"
                       << "\n  storage rate = " << spinup_storage_rate
@@ -575,10 +609,21 @@ void NPSAT_FLOW<dim>::run() {
                           << "\n  RMS delta q coefficient = "
                           << spinup_flux_change_rms
                           << "\n  relative flux L2 change = "
-                          << spinup_flux_change_relative_l2;
+                          << spinup_flux_change_relative_l2
+                          << "; tolerance = "
+                          << uo.spin_uo.flux_relative_l2_tolerance;
                 else
                     pcout << "\n  flux change = unavailable (first recovered spin-up field)";
-                pcout << std::defaultfloat << std::endl;
+                pcout << "\n  dry wells = " << last_dry_well_count
+                      << "; unchanged-count solves = "
+                      << stable_spinup_dry_well_solves << " of "
+                      << uo.spin_uo.stable_dry_well_solves
+                      << "\n  convergence metrics = "
+                      << (spinup_metrics_pass ? "PASS" : "not yet")
+                      << "; consecutive passes = "
+                      << consecutive_spinup_passes << " of "
+                      << uo.spin_uo.consecutive_passes
+                      << std::defaultfloat << std::endl;
 
                 for (auto dof = flux_locally_owned_dofs.begin();
                      dof != flux_locally_owned_dofs.end(); ++dof)
