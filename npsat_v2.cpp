@@ -119,6 +119,9 @@ private:
     // Post process methods
     void compute_heads();
     void compute_fluxes();
+    void compute_spinup_diagnostics(double &head_change_max,
+      double &head_change_rms, double &storage_volume_change,
+      double &storage_rate, double &storage_throughput_fraction) const;
     void compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev, const TrilinosWrappers::MPI::Vector &h_next,
       double &update_norm, double &ref_norm, double &full_update_norm) const;
     bool check_nonlinear_convergence(const double update_norm, const double ref_norm) const;
@@ -511,30 +514,41 @@ void NPSAT_FLOW<dim>::run() {
                         ExcMessage("Nonlinear solve did not converge; time was not advanced and the checkpoint was not updated."));
 
             double spinup_head_change = 0.0;
+            double spinup_head_change_rms = 0.0;
+            double spinup_storage_volume_change = 0.0;
+            double spinup_storage_rate = 0.0;
+            double spinup_storage_throughput_fraction = 0.0;
             bool spinup_converged = false;
             if (time_tracking.simulation_step() == 0)
             {
-                double local_spinup_head_change = 0.0;
-
-                for (auto dof = head_locally_owned_dofs.begin(); dof != head_locally_owned_dofs.end(); ++dof)
-                {
-                    const double head_change = std::abs(h_new[*dof] - h_old[*dof]);
-                    if (!std::isfinite(head_change))
-                        local_spinup_head_change = std::numeric_limits<double>::infinity();
-                    else
-                        local_spinup_head_change = std::max(local_spinup_head_change, head_change);
-                }
-                spinup_head_change = Utilities::MPI::max(local_spinup_head_change, mpi_communicator);
+                compute_spinup_diagnostics(spinup_head_change,
+                                           spinup_head_change_rms,
+                                           spinup_storage_volume_change,
+                                           spinup_storage_rate,
+                                           spinup_storage_throughput_fraction);
                 spinup_converged = spinup_head_change < uo.sim_opt.spinup_tolerance;
             }
             const bool spinup_limit_reached = (spinup_iteration + 1 == spinup_iteration_limit);
             const bool final_spinup_iteration = spinup_converged || spinup_limit_reached;
 
             if (time_tracking.simulation_step() == 0)
-                pcout << "Spin-up max |delta h| = " << std::scientific
-                      << spinup_head_change << " m; tolerance = "
-                      << uo.sim_opt.spinup_tolerance << " m"
+            {
+                const double prescribed_throughput =
+                    std::abs(last_recharge_total) + std::abs(last_stream_total) +
+                    std::abs(last_well_total);
+                pcout << "Spin-up diagnostics:" << std::scientific
+                      << "\n  max |delta h| = " << spinup_head_change
+                      << " m; tolerance = " << uo.sim_opt.spinup_tolerance << " m"
+                      << "\n  RMS delta h = " << spinup_head_change_rms << " m"
+                      << "\n  storage volume change = " << spinup_storage_volume_change
+                      << " volume units"
+                      << "\n  storage rate = " << spinup_storage_rate
+                      << " volume/time"
+                      << "\n  |storage rate| / prescribed-source throughput = "
+                      << spinup_storage_throughput_fraction
+                      << " (throughput = " << prescribed_throughput << " volume/time)"
                       << std::defaultfloat << std::endl;
+            }
 
             if (!final_spinup_iteration)
             {

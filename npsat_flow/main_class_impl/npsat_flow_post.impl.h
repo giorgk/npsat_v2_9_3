@@ -228,6 +228,92 @@ void NPSAT_FLOW<dim>::compute_heads(){
 }
 
 template <int dim>
+void NPSAT_FLOW<dim>::compute_spinup_diagnostics(
+    double &head_change_max,
+    double &head_change_rms,
+    double &storage_volume_change,
+    double &storage_rate,
+    double &storage_throughput_fraction) const
+{
+    double local_head_change_max = 0.0;
+    double local_head_change_sum_squares = 0.0;
+    double local_head_count = 0.0;
+    double local_storage_volume_change = 0.0;
+    bool local_values_are_finite = true;
+
+    const unsigned int n_head_dofs = fe_head.n_dofs_per_cell();
+    std::vector<types::global_dof_index> head_dof_indices(n_head_dofs);
+
+    // DG0 has one head DoF per cell. M00 is the storage mass used by the
+    // accepted nonlinear assembly, so this matches the storage calculation
+    // written by output_results() without requiring flux recovery.
+    for (auto head_cell = dof_handler_head.begin_active();
+         head_cell != dof_handler_head.end(); ++head_cell)
+    {
+        if (!head_cell->is_locally_owned())
+            continue;
+
+        head_cell->get_dof_indices(head_dof_indices);
+        const types::global_dof_index hdof = head_dof_indices[0];
+        const double delta_h = h_new[hdof] - h_old[hdof];
+
+        const unsigned int slot = head_cell->user_index();
+        Assert(slot != numbers::invalid_unsigned_int, ExcInternalError());
+        local_element_data_rt_0dg0.assert_valid_slot(slot);
+        const double M00 = local_element_data_rt_0dg0.get_M00(slot);
+
+        if (!std::isfinite(delta_h) || !std::isfinite(M00))
+        {
+            local_values_are_finite = false;
+            continue;
+        }
+
+        local_head_change_max = std::max(local_head_change_max,
+                                         std::abs(delta_h));
+        local_head_change_sum_squares += delta_h * delta_h;
+        local_head_count += 1.0;
+        local_storage_volume_change += M00 * delta_h;
+    }
+
+    const unsigned int invalid_rank_count = Utilities::MPI::sum(
+        local_values_are_finite ? 0u : 1u, mpi_communicator);
+    if (invalid_rank_count != 0)
+    {
+        head_change_max = std::numeric_limits<double>::infinity();
+        head_change_rms = std::numeric_limits<double>::infinity();
+        storage_volume_change = std::numeric_limits<double>::quiet_NaN();
+        storage_rate = std::numeric_limits<double>::quiet_NaN();
+        storage_throughput_fraction = std::numeric_limits<double>::quiet_NaN();
+        return;
+    }
+
+    head_change_max = Utilities::MPI::max(local_head_change_max,
+                                           mpi_communicator);
+    const double global_sum_squares = Utilities::MPI::sum(
+        local_head_change_sum_squares, mpi_communicator);
+    const double global_head_count = Utilities::MPI::sum(local_head_count,
+                                                          mpi_communicator);
+    head_change_rms = global_head_count > 0.0
+                          ? std::sqrt(global_sum_squares / global_head_count)
+                          : 0.0;
+
+    storage_volume_change = Utilities::MPI::sum(
+        local_storage_volume_change, mpi_communicator);
+    const double delta_time = time_tracking.duration();
+    storage_rate = storage_volume_change / delta_time;
+
+    // These totals are available immediately after assembly. They describe
+    // prescribed recharge, stream, and well rates; boundary exchanges that
+    // require recovered face fluxes are deliberately not included.
+    const double prescribed_throughput =
+        std::abs(last_recharge_total) + std::abs(last_stream_total) +
+        std::abs(last_well_total);
+    storage_throughput_fraction = prescribed_throughput > 0.0
+                                      ? std::abs(storage_rate) / prescribed_throughput
+                                      : std::numeric_limits<double>::quiet_NaN();
+}
+
+template <int dim>
 void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev,
                                const TrilinosWrappers::MPI::Vector &h_next,
                                double &update_norm, double &ref_norm,
