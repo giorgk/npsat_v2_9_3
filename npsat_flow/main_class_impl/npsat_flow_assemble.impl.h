@@ -691,7 +691,10 @@ void NPSAT_FLOW<dim>::assemble_system() {
             local_element_data_rt_0dg0.set_B(slot,local_B);
             local_element_data_rt_0dg0.set_C(slot,local_C);
             local_element_data_rt_0dg0.set_kinv_v(slot, Kinv_V[0]);
-            // local_element_data_rt_0dg0.set_M00(slot,local_M(0,0));
+            const double storage_mass = local_M(0,0);
+            AssertThrow(std::isfinite(storage_mass) && storage_mass >= 0.0,
+                        ExcMessage("Cell storage mass must be finite and nonnegative."));
+            local_element_data_rt_0dg0.set_M00(slot, storage_mass);
         }
     }// End of active cells loop
 
