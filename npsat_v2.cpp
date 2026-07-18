@@ -122,6 +122,10 @@ private:
     void compute_spinup_diagnostics(double &head_change_max,
       double &head_change_rms, double &storage_volume_change,
       double &storage_rate, double &storage_throughput_fraction) const;
+    void compute_flux_change_diagnostics(
+      const TrilinosWrappers::MPI::Vector &previous_flux,
+      double &flux_change_max, double &flux_change_rms,
+      double &flux_change_relative_l2) const;
     void compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev, const TrilinosWrappers::MPI::Vector &h_next,
       double &update_norm, double &ref_norm, double &full_update_norm) const;
     bool check_nonlinear_convergence(const double update_norm, const double ref_norm) const;
@@ -312,6 +316,10 @@ void NPSAT_FLOW<dim>::run() {
 
     TrilinosWrappers::MPI::Vector h_accel_owned;
     h_accel_owned.reinit(head_locally_owned_dofs, mpi_communicator);
+
+    TrilinosWrappers::MPI::Vector previous_spinup_flux_owned;
+    previous_spinup_flux_owned.reinit(flux_locally_owned_dofs, mpi_communicator);
+    bool have_previous_spinup_flux = false;
 
     double update_norm;
     double ref_norm;
@@ -513,11 +521,20 @@ void NPSAT_FLOW<dim>::run() {
             AssertThrow(step_converged,
                         ExcMessage("Nonlinear solve did not converge; time was not advanced and the checkpoint was not updated."));
 
+            // Flux recovery is required for every accepted spin-up solution so
+            // that consecutive flow fields can be compared. For ordinary time
+            // steps this is the same recovery that was previously done below,
+            // immediately before output.
+            compute_fluxes();
+
             double spinup_head_change = 0.0;
             double spinup_head_change_rms = 0.0;
             double spinup_storage_volume_change = 0.0;
             double spinup_storage_rate = 0.0;
             double spinup_storage_throughput_fraction = 0.0;
+            double spinup_flux_change_max = 0.0;
+            double spinup_flux_change_rms = 0.0;
+            double spinup_flux_change_relative_l2 = 0.0;
             bool spinup_converged = false;
             if (time_tracking.simulation_step() == 0)
             {
@@ -526,6 +543,11 @@ void NPSAT_FLOW<dim>::run() {
                                            spinup_storage_volume_change,
                                            spinup_storage_rate,
                                            spinup_storage_throughput_fraction);
+                if (have_previous_spinup_flux)
+                    compute_flux_change_diagnostics(previous_spinup_flux_owned,
+                                                    spinup_flux_change_max,
+                                                    spinup_flux_change_rms,
+                                                    spinup_flux_change_relative_l2);
                 spinup_converged = spinup_head_change < uo.sim_opt.spinup_tolerance;
             }
             const bool spinup_limit_reached = (spinup_iteration + 1 == spinup_iteration_limit);
@@ -546,8 +568,23 @@ void NPSAT_FLOW<dim>::run() {
                       << " volume/time"
                       << "\n  |storage rate| / prescribed-source throughput = "
                       << spinup_storage_throughput_fraction
-                      << " (throughput = " << prescribed_throughput << " volume/time)"
-                      << std::defaultfloat << std::endl;
+                      << " (throughput = " << prescribed_throughput << " volume/time)";
+                if (have_previous_spinup_flux)
+                    pcout << "\n  max |delta q coefficient| = "
+                          << spinup_flux_change_max
+                          << "\n  RMS delta q coefficient = "
+                          << spinup_flux_change_rms
+                          << "\n  relative flux L2 change = "
+                          << spinup_flux_change_relative_l2;
+                else
+                    pcout << "\n  flux change = unavailable (first recovered spin-up field)";
+                pcout << std::defaultfloat << std::endl;
+
+                for (auto dof = flux_locally_owned_dofs.begin();
+                     dof != flux_locally_owned_dofs.end(); ++dof)
+                    previous_spinup_flux_owned[*dof] = q_new[*dof];
+                previous_spinup_flux_owned.compress(VectorOperation::insert);
+                have_previous_spinup_flux = true;
             }
 
             if (!final_spinup_iteration)
@@ -563,8 +600,6 @@ void NPSAT_FLOW<dim>::run() {
             else if (time_tracking.simulation_step() == 0 && spinup_iteration_limit > 1)
                 pcout << "Spin-up iteration limit reached after "
                       << spinup_iteration_limit << " solves." << std::endl;
-
-            compute_fluxes();
 
             //Printing output
             const std::string out_prefix = output_prefix_path();

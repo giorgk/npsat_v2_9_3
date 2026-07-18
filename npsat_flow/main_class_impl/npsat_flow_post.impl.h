@@ -314,6 +314,70 @@ void NPSAT_FLOW<dim>::compute_spinup_diagnostics(
 }
 
 template <int dim>
+void NPSAT_FLOW<dim>::compute_flux_change_diagnostics(
+    const TrilinosWrappers::MPI::Vector &previous_flux,
+    double &flux_change_max,
+    double &flux_change_rms,
+    double &flux_change_relative_l2) const
+{
+    AssertDimension(previous_flux.size(), q_new.size());
+
+    double local_change_max = 0.0;
+    double local_change_sum_squares = 0.0;
+    double local_current_sum_squares = 0.0;
+    double local_flux_count = 0.0;
+    bool local_values_are_finite = true;
+
+    for (auto dof = flux_locally_owned_dofs.begin();
+         dof != flux_locally_owned_dofs.end(); ++dof)
+    {
+        const double current = q_new[*dof];
+        const double change = current - previous_flux[*dof];
+        if (!std::isfinite(current) || !std::isfinite(change))
+        {
+            local_values_are_finite = false;
+            continue;
+        }
+
+        local_change_max = std::max(local_change_max, std::abs(change));
+        local_change_sum_squares += change * change;
+        local_current_sum_squares += current * current;
+        local_flux_count += 1.0;
+    }
+
+    const unsigned int invalid_rank_count = Utilities::MPI::sum(
+        local_values_are_finite ? 0u : 1u, mpi_communicator);
+    if (invalid_rank_count != 0)
+    {
+        flux_change_max = std::numeric_limits<double>::infinity();
+        flux_change_rms = std::numeric_limits<double>::infinity();
+        flux_change_relative_l2 = std::numeric_limits<double>::infinity();
+        return;
+    }
+
+    flux_change_max = Utilities::MPI::max(local_change_max,
+                                           mpi_communicator);
+    const double global_change_sum_squares = Utilities::MPI::sum(
+        local_change_sum_squares, mpi_communicator);
+    const double global_current_sum_squares = Utilities::MPI::sum(
+        local_current_sum_squares, mpi_communicator);
+    const double global_flux_count = Utilities::MPI::sum(local_flux_count,
+                                                          mpi_communicator);
+
+    flux_change_rms = global_flux_count > 0.0
+                          ? std::sqrt(global_change_sum_squares /
+                                      global_flux_count)
+                          : 0.0;
+    if (global_current_sum_squares > 0.0)
+        flux_change_relative_l2 = std::sqrt(global_change_sum_squares /
+                                            global_current_sum_squares);
+    else
+        flux_change_relative_l2 = global_change_sum_squares == 0.0
+                                      ? 0.0
+                                      : std::numeric_limits<double>::infinity();
+}
+
+template <int dim>
 void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev,
                                const TrilinosWrappers::MPI::Vector &h_next,
                                double &update_norm, double &ref_norm,
