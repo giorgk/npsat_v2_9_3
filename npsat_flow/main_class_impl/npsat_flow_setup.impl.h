@@ -46,17 +46,9 @@ void NPSAT_FLOW<dim>::setup_system() {
     DoFTools::extract_locally_relevant_dofs(dof_handler_head,head_locally_relevant_dofs);
     DoFTools::extract_locally_relevant_dofs(dof_handler_flux,flux_locally_relevant_dofs);
 
-    // 4. Build constraints for the trace (unchanged)
-    lambda_constraints.clear();
-    lambda_constraints.reinit(lambda_locally_relevant_dofs);
-
-    //Apply hanging node constraints
-    DoFTools::make_hanging_node_constraints(dof_handler_trace,lambda_constraints);
-
-    // Apply boundary conditions (call the new function)
-    apply_trace_boundary_conditions();
-
-    lambda_constraints.close();
+    // 4. Build constraints for the trace. run() aligned the forcing index
+    // before setup, so the initial inhomogeneous values match Start_step.
+    rebuild_trace_constraints();
 
     // lambda_ownership knows which ranges each processor owns
     lambda_ownership.reinit(lambda_locally_owned_dofs, mpi_communicator, uo.verbose_level);
@@ -199,8 +191,20 @@ void NPSAT_FLOW<dim>::setup_system() {
 }
 
 template <int dim>
+void NPSAT_FLOW<dim>::rebuild_trace_constraints() {
+    lambda_constraints.clear();
+    lambda_constraints.reinit(lambda_locally_relevant_dofs);
+
+    DoFTools::make_hanging_node_constraints(dof_handler_trace,
+                                             lambda_constraints);
+    apply_trace_boundary_conditions();
+    lambda_constraints.close();
+}
+
+template <int dim>
 void NPSAT_FLOW<dim>::apply_trace_boundary_conditions() {
-    pcout << "Applying trace boundary conditions..." << std::endl;
+    pcout << "Applying trace boundary conditions for forcing step "
+          << time_tracking.forcing_step() << "..." << std::endl;
 
     for (typename decltype(dirichlet_boundary_map)::const_iterator it =
              dirichlet_boundary_map.begin();

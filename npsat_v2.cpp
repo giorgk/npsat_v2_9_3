@@ -92,6 +92,7 @@ private:
     // Methods related to setup system
     void setup_system();
     void apply_trace_boundary_conditions();
+    void rebuild_trace_constraints();
     void setup_local_cell_well_link();
     void setup_well_index_sets_by_segments();
     void update_local_cell_well_link_owners();
@@ -310,6 +311,9 @@ void NPSAT_FLOW<dim>::run() {
         return;
     }
 
+    // Select Start_step forcing before setup_system() interpolates the initial
+    // inhomogeneous Dirichlet constraint values.
+    align_time_dependent_data();
     setup_system();
     unsigned int completed_spinup_iterations = 0;
     if (uo.sim_opt.restart_from_checkpoint)
@@ -346,8 +350,15 @@ void NPSAT_FLOW<dim>::run() {
         nonlinear_log << std::setprecision(16) << std::scientific;
     }
 
+    const bool spinup_enabled = (uo.spin_uo.iterations > 0);
+    if (!spinup_enabled)
+        pcout << "Spin-up disabled: Spinup.Iterations = 0." << std::endl;
+
     while (!time_tracking.done()) {
-        const unsigned int spinup_iteration_limit = (time_tracking.simulation_step() == 0 ? uo.spin_uo.iterations : 1u);
+        const bool first_simulation_step = (time_tracking.simulation_step() == 0);
+        const bool spinup_active = first_simulation_step && spinup_enabled;
+        const unsigned int spinup_iteration_limit =
+            (spinup_active ? uo.spin_uo.iterations : 1u);
         const unsigned int spinup_iteration_begin = (time_tracking.simulation_step() == 0 ? completed_spinup_iterations : 0u);
 
         for (unsigned int spinup_iteration = spinup_iteration_begin; spinup_iteration < spinup_iteration_limit; ++spinup_iteration)
@@ -360,6 +371,7 @@ void NPSAT_FLOW<dim>::run() {
                       << " of at most " << spinup_iteration_limit << std::endl;
 
             align_time_dependent_data();
+            rebuild_trace_constraints();
 
             // ------------------------------------------------------------
             // Nonlinear solve for this time step
@@ -551,7 +563,7 @@ void NPSAT_FLOW<dim>::run() {
             double spinup_budget_percent_discrepancy = 0.0;
             bool spinup_metrics_pass = false;
             bool spinup_converged = false;
-            if (time_tracking.simulation_step() == 0)
+            if (spinup_active)
             {
                 compute_spinup_diagnostics(spinup_head_change,
                                            spinup_head_change_rms,
@@ -621,10 +633,12 @@ void NPSAT_FLOW<dim>::run() {
                 spinup_converged =
                     consecutive_spinup_passes >= uo.spin_uo.consecutive_passes;
             }
-            const bool spinup_limit_reached = (spinup_iteration + 1 == spinup_iteration_limit);
-            const bool final_spinup_iteration = spinup_converged || spinup_limit_reached;
+            const bool spinup_limit_reached =
+                spinup_active && (spinup_iteration + 1 == spinup_iteration_limit);
+            const bool final_spinup_iteration =
+                !spinup_active || spinup_converged || spinup_limit_reached;
 
-            if (time_tracking.simulation_step() == 0)
+            if (spinup_active)
             {
                 const double prescribed_throughput =
                     std::abs(last_recharge_total) + std::abs(last_stream_total) +
@@ -694,7 +708,7 @@ void NPSAT_FLOW<dim>::run() {
             if (spinup_converged)
                 pcout << "Spin-up converged after " << (spinup_iteration + 1)
                       << " solves." << std::endl;
-            else if (time_tracking.simulation_step() == 0 && spinup_iteration_limit > 1)
+            else if (spinup_active)
                 pcout << "Spin-up iteration limit reached after "
                       << spinup_iteration_limit << " solves." << std::endl;
 

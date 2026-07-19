@@ -177,6 +177,8 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
               ExcMessage("Checkpoint next simulation step exceeds the configured Simulation.Nsteps."));
   if (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup))
   {
+    AssertThrow(uo.spin_uo.iterations > 0,
+                ExcMessage("Cannot resume a spin-up checkpoint when Spinup.Iterations is zero."));
     AssertThrow(saved_run_step == 0 && saved_repeat > 0,
                 ExcMessage("Spin-up checkpoint contains inconsistent counters."));
     AssertThrow(saved_repeat < uo.spin_uo.iterations,
