@@ -4,7 +4,12 @@
 template <int dim>
 std::string NPSAT_FLOW<dim>::checkpoint_base_path() const
 {
-  return npsat_flow::resolve_relative_path(output_root_path(),
+  const std::string checkpoint_root =
+      npsat_flow::trim(uo.checkpoint_folder).empty()
+          ? output_root_path()
+          : npsat_flow::resolve_relative_path(uo.main_path,
+                                               uo.checkpoint_folder);
+  return npsat_flow::resolve_relative_path(checkpoint_root,
                                            uo.sim_opt.checkpoint_file);
 }
 
@@ -131,6 +136,7 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   unsigned int saved_start = 0, saved_nsteps = 0, saved_run_step = 0, saved_repeat = 0;
   std::uint64_t saved_global_dofs = 0;
   int meta_ok = 1;
+  int used_backup_metadata = 0;
 
   if (my_rank == 0)
   {
@@ -139,6 +145,7 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
     {
       meta.clear();
       meta.open((base + ".meta.bak").c_str());
+      used_backup_metadata = 1;
     }
     std::string label;
     unsigned int version = 0;
@@ -166,6 +173,21 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   MPI_Bcast(&saved_nsteps, 1, MPI_UNSIGNED, 0, mpi_communicator);
   MPI_Bcast(&saved_run_step, 1, MPI_UNSIGNED, 0, mpi_communicator);
   MPI_Bcast(&saved_repeat, 1, MPI_UNSIGNED, 0, mpi_communicator);
+  MPI_Bcast(&used_backup_metadata, 1, MPI_INT, 0, mpi_communicator);
+
+  const char *phase_name =
+      (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup)
+           ? "spin-up"
+           : (saved_phase == static_cast<unsigned int>(checkpoint_phase_finished)
+                  ? "finished"
+                  : "simulation"));
+  pcout << "Checkpoint metadata selected committed slot " << slot
+        << " from " << base
+        << (used_backup_metadata ? ".meta.bak" : ".meta")
+        << "\n  phase = " << phase_name
+        << ", simulation counter = " << saved_run_step
+        << ", completed spin-up solves = " << saved_repeat
+        << ", MPI ranks = " << saved_nproc << std::endl;
 
   AssertThrow(saved_nproc == n_proc, ExcMessage("Checkpoint requires the same MPI process count."));
   AssertThrow(saved_global_dofs == dof_handler_head.n_dofs(), ExcMessage("Checkpoint head DoF count does not match the current mesh."));

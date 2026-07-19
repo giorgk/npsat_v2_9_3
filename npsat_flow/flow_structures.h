@@ -127,6 +127,7 @@ namespace npsat_flow {
     {
         std::string main_path;
         std::string output_path;
+        std::string checkpoint_folder;
         std::string input_path;
         std::string output_prefix;
         std::string initial_head_file;

@@ -19,6 +19,16 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
               ExcMessage("Output directory does not exist: " + output_root));
   AssertThrow(npsat_flow::path_is_directory(output_root),
               ExcMessage("Output path is not a directory: " + output_root));
+  const std::string checkpoint_root =
+      npsat_flow::trim(uo.checkpoint_folder).empty()
+          ? output_root
+          : npsat_flow::resolve_relative_path(uo.main_path, uo.checkpoint_folder);
+  AssertThrow(!checkpoint_root.empty(),
+              ExcMessage("Paths.CheckPointsFolder must resolve to a non-empty directory."));
+  AssertThrow(npsat_flow::path_exists(checkpoint_root),
+              ExcMessage("Checkpoint directory does not exist: " + checkpoint_root));
+  AssertThrow(npsat_flow::path_is_directory(checkpoint_root),
+              ExcMessage("Checkpoint path is not a directory: " + checkpoint_root));
   pcout << "=======================================================" << std::endl;
   pcout << "Reading data..." << std::endl;
 

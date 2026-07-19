@@ -73,6 +73,7 @@ namespace npsat_flow {
             ("Paths.Main", po::value<std::string>(), "Main simulation path")
             ("Paths.Input", po::value<std::string>(), "Path relative to Main for all input files")
             ("Paths.Output", po::value<std::string>(), "Path relative to Main for all output files")
+            ("Paths.CheckPointsFolder", po::value<std::string>()->default_value(""), "Checkpoint directory relative to Main; empty uses Paths.Output")
 
             //[Geometry]
             ("Geometry.Type", po::value<std::string>(), "BOX or FILE")
@@ -225,6 +226,7 @@ namespace npsat_flow {
                     uo.main_path = vm_cfg["Paths.Main"].as<std::string>();
                     uo.input_path = vm_cfg["Paths.Input"].as<std::string>();
                     uo.output_path = vm_cfg["Paths.Output"].as<std::string>();
+                    uo.checkpoint_folder = vm_cfg["Paths.CheckPointsFolder"].as<std::string>();
                 }
 
                 { // Geometry
