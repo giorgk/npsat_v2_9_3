@@ -217,7 +217,7 @@ template<int dim>
 void NPSAT_FLOW<dim>::save_water_table_per_step(const std::string &prefix) const {
     pcout << "\t save_water_table_per_step..." << std::endl;
 
-    const unsigned int step_no = time_tracking.simulation_step();
+    const unsigned int step_no = time_tracking.file_step();
     const std::string step_s   = Utilities::int_to_string(step_no, 3);
     const std::string rank_s   = Utilities::int_to_string(my_rank, 4);
 
@@ -370,7 +370,7 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
     if (!uo.save_trace_data)
         return;
 
-    const unsigned int step_no = time_tracking.simulation_step();
+    const unsigned int step_no = time_tracking.file_step();
     const std::string step     = Utilities::int_to_string(step_no, 3);
     const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
@@ -533,7 +533,7 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
         const std::uint32_t version = 2;
 
         const std::uint64_t step_u64 = static_cast<std::uint64_t>(step_no);
-        const double t  = time_tracking.simulation_step();
+        const double t  = time_tracking.file_step();
         const double dt = time_tracking.duration();
 
         const double sum_d    = static_cast<double>(checksum_sum);

@@ -127,7 +127,7 @@ void NPSAT_FLOW<dim>::write_well_exchange_identity_csv_mpi(const std::string &pr
     // -----------------------------
     // 5) Write CSV for wells owned by this rank
     // -----------------------------
-    const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
+    const std::string step = Utilities::int_to_string(time_tracking.file_step(), 3);
     const std::string str_rank = Utilities::int_to_string(my_rank, 4);
     std::ostringstream fname;
     fname << prefix << "_well_resid_rank_" << str_rank << "_step_" << step <<  ".csv";
@@ -298,7 +298,7 @@ void NPSAT_FLOW<dim>::compute_wellbore_flows(const std::string &prefix) const {
     // 4) Write one CSV per rank with owned wells only.
     //    Variable number of columns is allowed as requested.
     // ---------------------------------------------------------------------
-    const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
+    const std::string step = Utilities::int_to_string(time_tracking.file_step(), 3);
     const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
     std::ostringstream fname;
@@ -534,7 +534,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
     std::vector<npsat_flow::WellSegmentOut> vtk_segments;
     vtk_segments.reserve(recv_flat.size());
 
-    const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
+    const std::string step = Utilities::int_to_string(time_tracking.file_step(), 3);
     const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
     // MPI_Barrier(mpi_communicator);
@@ -717,7 +717,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
 
     if (write_trace_binary)
     {
-        const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
+        const std::string step = Utilities::int_to_string(time_tracking.file_step(), 3);
         const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
         std::ostringstream binname;
@@ -729,7 +729,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
         bout.write(magic, 8);
 
         const std::uint32_t version = 1;
-        const std::uint32_t step_u32 = static_cast<std::uint32_t>(time_tracking.simulation_step());
+        const std::uint32_t step_u32 = static_cast<std::uint32_t>(time_tracking.file_step());
         npsat_flow::write_pod(bout, version);
         npsat_flow::write_pod(bout, step_u32);
 
@@ -768,13 +768,14 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
     if (!write_csv && !write_solution_cell_vtu && !write_cellcenters_vtk)
         return;
 
-    pcout << "\t Writing CELL-based results to VTU/CSV at output step "
-          << time_tracking.simulation_step() << "..." << std::endl;
+    pcout << "\t Writing CELL-based results for input data time step "
+          << time_tracking.file_step() << " (simulation counter "
+          << time_tracking.simulation_step() << ")..." << std::endl;
 
     // -----------------------------
     // Output file names
     // -----------------------------
-    const std::string step = Utilities::int_to_string(time_tracking.simulation_step(), 3);
+    const std::string step = Utilities::int_to_string(time_tracking.file_step(), 3);
     const std::string str_rank = Utilities::int_to_string(my_rank, 4);
     std::ostringstream csv_name;
     csv_name << prefix << "_cell_budget_rank_" << str_rank << "_step_" << step << ".csv";
@@ -1076,7 +1077,7 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
             data_out.write_vtu_with_pvtu_record(
             output_dir,
                 base.str(),
-                time_tracking.simulation_step(),
+                time_tracking.file_step(),
                 mpi_communicator,
                 /*n_digits_for_rank=*/4,
                 /*n_digits_for_cycle=*/3);
@@ -1094,7 +1095,7 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
         // ------------------------------------------------------------
         static_assert(dim == 3, "This VTK point-cloud writer assumes dim=3.");
 
-        const std::string step     = Utilities::int_to_string(time_tracking.simulation_step(), 3);
+        const std::string step     = Utilities::int_to_string(time_tracking.file_step(), 3);
         const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
         std::ostringstream vtk_name;
