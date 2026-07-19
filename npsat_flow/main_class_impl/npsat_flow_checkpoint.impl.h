@@ -14,15 +14,18 @@ std::string NPSAT_FLOW<dim>::checkpoint_base_path() const
 }
 
 template <int dim>
-void NPSAT_FLOW<dim>::save_checkpoint(const unsigned int completed_spinup_iterations)
+void NPSAT_FLOW<dim>::save_checkpoint(
+    const unsigned int completed_spinup_iterations,
+    const bool spinup_complete_initial_condition)
 {
   const std::uint64_t magic = static_cast<std::uint64_t>(0x4e5053415443484bULL); // "NPSATCHK"
   const std::uint32_t format_version = 2;
   const unsigned int new_slot = 1u - checkpoint_slot;
   const std::string base = checkpoint_base_path();
   const CheckpointPhase phase =
-      (completed_spinup_iterations > 0 ? checkpoint_phase_spinup :
-       (time_tracking.done() ? checkpoint_phase_finished : checkpoint_phase_simulation));
+      (spinup_complete_initial_condition ? checkpoint_phase_spinup_complete :
+       (completed_spinup_iterations > 0 ? checkpoint_phase_spinup :
+        (time_tracking.done() ? checkpoint_phase_finished : checkpoint_phase_simulation)));
 
   std::ostringstream rank_name;
   rank_name << base << ".slot" << new_slot << ".rank"
@@ -119,6 +122,10 @@ void NPSAT_FLOW<dim>::save_checkpoint(const unsigned int completed_spinup_iterat
   if (phase == checkpoint_phase_spinup)
     pcout << "Spin-up checkpoint saved after iteration "
           << completed_spinup_iterations << std::endl;
+  else if (phase == checkpoint_phase_spinup_complete)
+    pcout << "Spin-up-complete initial-condition checkpoint saved for input data step "
+          << time_tracking.file_step() << " (Simulation.Start_step="
+          << uo.sim_opt.Start_step << ")" << std::endl;
   else if (phase == checkpoint_phase_finished)
     pcout << "Finished-simulation checkpoint saved at step "
           << time_tracking.simulation_step() << std::endl;
@@ -178,9 +185,11 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   const char *phase_name =
       (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup)
            ? "spin-up"
+           : (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup_complete)
+                  ? "spin-up complete initial condition"
            : (saved_phase == static_cast<unsigned int>(checkpoint_phase_finished)
                   ? "finished"
-                  : "simulation"));
+                  : "simulation")));
   pcout << "Checkpoint metadata selected committed slot " << slot
         << " from " << base
         << (used_backup_metadata ? ".meta.bak" : ".meta")
@@ -192,8 +201,11 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   AssertThrow(saved_nproc == n_proc, ExcMessage("Checkpoint requires the same MPI process count."));
   AssertThrow(saved_global_dofs == dof_handler_head.n_dofs(), ExcMessage("Checkpoint head DoF count does not match the current mesh."));
   AssertThrow(saved_dim == dim && saved_degree == degree, ExcMessage("Checkpoint dimension or finite-element degree does not match."));
-  AssertThrow(saved_start == static_cast<unsigned int>(uo.sim_opt.Start_step), ExcMessage("Checkpoint Simulation.Start_step does not match."));
-  AssertThrow(saved_phase <= static_cast<unsigned int>(checkpoint_phase_finished),
+  AssertThrow(saved_start == static_cast<unsigned int>(uo.sim_opt.Start_step),
+              ExcMessage("Checkpoint Simulation.Start_step mismatch: checkpoint uses " +
+                         std::to_string(saved_start) + ", configuration uses " +
+                         std::to_string(uo.sim_opt.Start_step) + "."));
+  AssertThrow(saved_phase <= static_cast<unsigned int>(checkpoint_phase_spinup_complete),
               ExcMessage("Checkpoint contains an invalid execution phase."));
   AssertThrow(saved_run_step <= static_cast<unsigned int>(uo.sim_opt.n_steps),
               ExcMessage("Checkpoint next simulation step exceeds the configured Simulation.Nsteps."));
@@ -205,6 +217,12 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
                 ExcMessage("Spin-up checkpoint contains inconsistent counters."));
     AssertThrow(saved_repeat < uo.spin_uo.iterations,
                 ExcMessage("Spinup.Iterations must be greater than the completed spin-up iteration stored in the checkpoint."));
+  }
+  else if (saved_phase ==
+           static_cast<unsigned int>(checkpoint_phase_spinup_complete))
+  {
+    AssertThrow(saved_run_step == 0 && saved_repeat == 0,
+                ExcMessage("Spin-up-complete checkpoint contains inconsistent counters."));
   }
   else
   {
@@ -255,10 +273,17 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   h_old.compress(VectorOperation::insert);
   time_tracking.restore_simulation_step(saved_run_step);
   checkpoint_slot = slot;
+  loaded_spinup_complete_checkpoint =
+      saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup_complete);
   if (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup))
     pcout << "Spin-up checkpoint loaded; resuming at spin-up iteration "
           << (saved_repeat + 1) << " of at most "
           << uo.spin_uo.iterations << std::endl;
+  else if (loaded_spinup_complete_checkpoint)
+    pcout << "Spin-up-complete initial conditions loaded for input data step "
+          << time_tracking.file_step()
+          << "; transient simulation will begin at simulation counter 0 without rerunning spin-up."
+          << std::endl;
   else
     pcout << "Simulation checkpoint loaded; next simulation step "
           << saved_run_step << " of " << uo.sim_opt.n_steps

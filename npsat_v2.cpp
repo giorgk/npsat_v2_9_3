@@ -85,7 +85,8 @@ private:
     {
         checkpoint_phase_spinup = 0,
         checkpoint_phase_simulation = 1,
-        checkpoint_phase_finished = 2
+        checkpoint_phase_finished = 2,
+        checkpoint_phase_spinup_complete = 3
     };
 
     void set_simulation_data();
@@ -100,7 +101,8 @@ private:
     void update_local_cell_well_link_owners();
     void build_trace_well_coupling_maps();
     void initialize_initial_head();
-    void save_checkpoint(const unsigned int completed_spinup_iterations);
+    void save_checkpoint(const unsigned int completed_spinup_iterations,
+                         const bool spinup_complete_initial_condition = false);
     unsigned int load_checkpoint();
     std::string checkpoint_base_path() const;
 
@@ -252,6 +254,7 @@ private:
     unsigned int my_rank; ///< MPI rank of this process.
     unsigned int n_proc; ///< Total number of MPI ranks.
     unsigned int checkpoint_slot = 1; ///< Last committed slot; the next save uses the other slot.
+    bool loaded_spinup_complete_checkpoint = false;
     unsigned int last_linear_iterations = 0;
     double last_recharge_total = 0.0;
     double last_stream_total = 0.0;
@@ -409,7 +412,9 @@ void NPSAT_FLOW<dim>::run() {
         const std::chrono::steady_clock::time_point time_step_wall_start =
             std::chrono::steady_clock::now();
         const bool first_simulation_step = (time_tracking.simulation_step() == 0);
-        const bool spinup_active = first_simulation_step && spinup_enabled;
+        const bool spinup_active =
+            first_simulation_step && spinup_enabled &&
+            !loaded_spinup_complete_checkpoint;
         const unsigned int spinup_iteration_limit =
             (spinup_active ? uo.spin_uo.iterations : 1u);
         const unsigned int spinup_iteration_begin = (time_tracking.simulation_step() == 0 ? completed_spinup_iterations : 0u);
@@ -854,6 +859,32 @@ void NPSAT_FLOW<dim>::run() {
                 pcout << "Spin-up iteration limit reached after "
                       << spinup_iteration_limit << " solves." << std::endl;
 
+            if (spinup_converged && uo.spin_uo.exit_after_convergence)
+            {
+                // This is an initial condition at Start_step, not a completed
+                // transient time step.  Do not write step outputs, advance the
+                // simulation counter, or append a time-step budget row.
+                h_old = h_new;
+                save_checkpoint(0, true);
+                MPI_Barrier(mpi_communicator);
+                const double local_spinup_seconds =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() -
+                        time_step_wall_start).count();
+                const double spinup_seconds =
+                    Utilities::MPI::max(local_spinup_seconds, mpi_communicator);
+                pcout << "Spinup.ExitAfterConvergence enabled: saved initial conditions "
+                         "for input data time step "
+                      << time_tracking.file_step()
+                      << " and exited before simulating simulation counter 0."
+                      << "\n  Spin-up wall time: " << std::fixed
+                      << std::setprecision(3) << spinup_seconds << " s = "
+                      << spinup_seconds / 60.0 << " min = "
+                      << spinup_seconds / 3600.0 << " h"
+                      << std::defaultfloat << std::endl;
+                return;
+            }
+
             //Printing output
             const std::string out_prefix = output_prefix_path();
             write_well_exchange_identity_csv_mpi(out_prefix);
@@ -878,18 +909,8 @@ void NPSAT_FLOW<dim>::run() {
             const unsigned int completed_input_step = time_tracking.file_step();
             const double completed_model_duration = time_tracking.duration();
             h_old = h_new;
-            const bool exit_after_spinup =
-                spinup_converged && uo.spin_uo.exit_after_convergence;
-            if (exit_after_spinup)
-            {
-                save_checkpoint(0);
-                MPI_Barrier(mpi_communicator);
-            }
-            else
-            {
-                time_tracking.advance();
-                save_checkpoint(0);
-            }
+            time_tracking.advance();
+            save_checkpoint(0);
 
             const double local_step_wall_seconds =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() -
@@ -939,13 +960,6 @@ void NPSAT_FLOW<dim>::run() {
                             ExcMessage("Failed writing time-step budget history."));
             }
 
-            if (exit_after_spinup)
-            {
-                pcout << "Spinup.ExitAfterConvergence enabled: successful spin-up outputs "
-                         "and checkpoint were written; exiting before transient time stepping."
-                      << std::endl;
-                return;
-            }
             // Re-enter the outer loop so TimeStepTracker::done() is checked after
             // advancing. Otherwise a converged spin-up exits step 0 but continues
             // through the stale spin-up for-loop limit.
