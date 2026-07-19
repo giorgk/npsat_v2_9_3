@@ -378,6 +378,72 @@ void NPSAT_FLOW<dim>::compute_flux_change_diagnostics(
 }
 
 template <int dim>
+void NPSAT_FLOW<dim>::compute_dirichlet_boundary_fluxes(
+    double &dirichlet_inflow,
+    double &dirichlet_outflow,
+    double &dirichlet_net_outflow) const
+{
+    QGauss<dim-1> face_quadrature(fe_flux.degree + 2);
+    FEFaceValues<dim> fe_face(fe_flux, face_quadrature,
+                              update_values | update_normal_vectors |
+                              update_JxW_values);
+    FEValuesExtractors::Vector flux(0);
+
+    const unsigned int n_flux_dofs = fe_flux.n_dofs_per_cell();
+    std::vector<types::global_dof_index> flux_dof_indices(n_flux_dofs);
+    Vector<double> q_coeff(n_flux_dofs);
+
+    double local_dirichlet_inflow = 0.0;
+    double local_dirichlet_outflow = 0.0;
+
+    for (const auto &flux_cell : dof_handler_flux.active_cell_iterators())
+    {
+        if (!flux_cell->is_locally_owned())
+            continue;
+
+        flux_cell->get_dof_indices(flux_dof_indices);
+        for (unsigned int i = 0; i < n_flux_dofs; ++i)
+            q_coeff(i) = q_new[flux_dof_indices[i]];
+
+        for (unsigned int face = 0;
+             face < GeometryInfo<dim>::faces_per_cell; ++face)
+        {
+            if (!flux_cell->face(face)->at_boundary())
+                continue;
+
+            const types::boundary_id boundary_id =
+                flux_cell->face(face)->boundary_id();
+            if (dirichlet_boundary_map.find(boundary_id) ==
+                dirichlet_boundary_map.end())
+                continue;
+
+            fe_face.reinit(flux_cell, face);
+            double face_outward_flow = 0.0;
+            for (unsigned int q = 0; q < face_quadrature.size(); ++q)
+            {
+                Tensor<1, dim> q_value;
+                for (unsigned int i = 0; i < n_flux_dofs; ++i)
+                    q_value += q_coeff(i) * fe_face[flux].value(i, q);
+
+                face_outward_flow +=
+                    (q_value * fe_face.normal_vector(q)) * fe_face.JxW(q);
+            }
+
+            if (face_outward_flow >= 0.0)
+                local_dirichlet_outflow += face_outward_flow;
+            else
+                local_dirichlet_inflow -= face_outward_flow;
+        }
+    }
+
+    dirichlet_inflow = Utilities::MPI::sum(local_dirichlet_inflow,
+                                            mpi_communicator);
+    dirichlet_outflow = Utilities::MPI::sum(local_dirichlet_outflow,
+                                             mpi_communicator);
+    dirichlet_net_outflow = dirichlet_outflow - dirichlet_inflow;
+}
+
+template <int dim>
 void NPSAT_FLOW<dim>::compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev,
                                const TrilinosWrappers::MPI::Vector &h_next,
                                double &update_norm, double &ref_norm,

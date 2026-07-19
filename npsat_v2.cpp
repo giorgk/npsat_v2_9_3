@@ -126,6 +126,9 @@ private:
       const TrilinosWrappers::MPI::Vector &previous_flux,
       double &flux_change_max, double &flux_change_rms,
       double &flux_change_relative_l2) const;
+    void compute_dirichlet_boundary_fluxes(
+      double &dirichlet_inflow, double &dirichlet_outflow,
+      double &dirichlet_net_outflow) const;
     void compute_update_norm(const TrilinosWrappers::MPI::Vector &h_prev, const TrilinosWrappers::MPI::Vector &h_next,
       double &update_norm, double &ref_norm, double &full_update_norm) const;
     bool check_nonlinear_convergence(const double update_norm, const double ref_norm) const;
@@ -539,6 +542,13 @@ void NPSAT_FLOW<dim>::run() {
             double spinup_flux_change_max = 0.0;
             double spinup_flux_change_rms = 0.0;
             double spinup_flux_change_relative_l2 = 0.0;
+            double spinup_dirichlet_inflow = 0.0;
+            double spinup_dirichlet_outflow = 0.0;
+            double spinup_dirichlet_net_outflow = 0.0;
+            double spinup_budget_inflow = 0.0;
+            double spinup_budget_outflow = 0.0;
+            double spinup_budget_residual = 0.0;
+            double spinup_budget_percent_discrepancy = 0.0;
             bool spinup_metrics_pass = false;
             bool spinup_converged = false;
             if (time_tracking.simulation_step() == 0)
@@ -548,6 +558,34 @@ void NPSAT_FLOW<dim>::run() {
                                            spinup_storage_volume_change,
                                            spinup_storage_rate,
                                            spinup_storage_throughput_fraction);
+                compute_dirichlet_boundary_fluxes(spinup_dirichlet_inflow,
+                                                  spinup_dirichlet_outflow,
+                                                  spinup_dirichlet_net_outflow);
+
+                // Assemble a complete budget for the currently supported model:
+                // recharge, streams, wells, Dirichlet exchange, and storage.
+                // Positive source components enter the aquifer; positive storage
+                // is accumulation and therefore belongs on the outflow side.
+                spinup_budget_inflow =
+                    std::max(last_recharge_total, 0.0) +
+                    std::max(last_stream_total, 0.0) +
+                    std::max(last_well_total, 0.0) +
+                    spinup_dirichlet_inflow +
+                    std::max(-spinup_storage_rate, 0.0);
+                spinup_budget_outflow =
+                    std::max(-last_recharge_total, 0.0) +
+                    std::max(-last_stream_total, 0.0) +
+                    std::max(-last_well_total, 0.0) +
+                    spinup_dirichlet_outflow +
+                    std::max(spinup_storage_rate, 0.0);
+                spinup_budget_residual =
+                    spinup_budget_inflow - spinup_budget_outflow;
+                const double budget_sum =
+                    spinup_budget_inflow + spinup_budget_outflow;
+                spinup_budget_percent_discrepancy =
+                    budget_sum > 0.0
+                        ? 200.0 * spinup_budget_residual / budget_sum
+                        : 0.0;
                 if (have_previous_spinup_flux)
                     compute_flux_change_diagnostics(previous_spinup_flux_owned,
                                                     spinup_flux_change_max,
@@ -602,7 +640,21 @@ void NPSAT_FLOW<dim>::run() {
                       << " volume/time"
                       << "\n  |storage rate| / prescribed-source throughput = "
                       << spinup_storage_throughput_fraction
-                      << " (throughput = " << prescribed_throughput << " volume/time)";
+                      << " (throughput = " << prescribed_throughput << " volume/time)"
+                      << "\n  Dirichlet inflow = " << spinup_dirichlet_inflow
+                      << " volume/time"
+                      << "\n  Dirichlet outflow = " << spinup_dirichlet_outflow
+                      << " volume/time"
+                      << "\n  Dirichlet net outflow = "
+                      << spinup_dirichlet_net_outflow << " volume/time"
+                      << "\n  complete budget inflow = " << spinup_budget_inflow
+                      << " volume/time"
+                      << "\n  complete budget outflow = " << spinup_budget_outflow
+                      << " volume/time"
+                      << "\n  complete budget residual (in-out) = "
+                      << spinup_budget_residual << " volume/time"
+                      << "\n  complete budget percent discrepancy = "
+                      << spinup_budget_percent_discrepancy << " %";
                 if (have_previous_spinup_flux)
                     pcout << "\n  max |delta q coefficient| = "
                           << spinup_flux_change_max
