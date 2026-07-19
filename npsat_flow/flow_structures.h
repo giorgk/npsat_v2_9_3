@@ -77,7 +77,8 @@ namespace npsat_flow {
         double flux_relative_l2_tolerance = 1.0e-2;
         double rms_head_tolerance = 1.0e-1;              // [L]
         unsigned int consecutive_passes = 3;
-        unsigned int stable_dry_well_solves = 3;
+        double pumping_loss_fraction_tolerance = 5.0e-3; // fraction of requested pumping
+        double pumping_loss_stability_tolerance = 1.0e-4;// solve-to-solve fraction change
     };
 
     struct Solver_uo {
@@ -129,6 +130,7 @@ namespace npsat_flow {
         std::string output_prefix;
         std::string initial_head_file;
         std::string log_file;
+        int dry_well_log = 0;
 
         bool isBox = false;
         std::vector<double> box_dims;

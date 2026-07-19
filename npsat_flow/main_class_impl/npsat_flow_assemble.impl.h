@@ -106,6 +106,8 @@ void NPSAT_FLOW<dim>::assemble_system() {
     std::vector<double> local_well_cwc_eff_sum(n_wells, 0.0);
     std::vector<double> local_well_wet_screen_sum(n_wells, 0.0);
     std::vector<double> local_well_total_screen_sum(n_wells, 0.0);
+    std::vector<double> local_well_bottom_head(
+        n_wells, -std::numeric_limits<double>::max());
 
 
     // =====================================================
@@ -546,6 +548,12 @@ void NPSAT_FLOW<dim>::assemble_system() {
                     local_well_cwc_eff_sum[well_id] += cwc;
                     local_well_wet_screen_sum[well_id] += wet_screen_length;
                     local_well_total_screen_sum[well_id] += link.sl;
+                    const double bottom_tolerance =
+                        1.0e-8 * (1.0 + std::abs(mnwells.wells[well_id].bottom));
+                    if (std::abs(link.w_zbot - mnwells.wells[well_id].bottom) <=
+                        bottom_tolerance)
+                        local_well_bottom_head[well_id] =
+                            std::max(local_well_bottom_head[well_id], nl_cell_data.h_e);
 
                     // Ownership of this well dof
                     const unsigned int well_owner = well_owner_rank[well_id];
@@ -769,6 +777,8 @@ void NPSAT_FLOW<dim>::assemble_system() {
     std::vector<double> global_well_cwc_eff_sum(n_wells, 0.0);
     std::vector<double> global_well_wet_screen_sum(n_wells, 0.0);
     std::vector<double> global_well_total_screen_sum(n_wells, 0.0);
+    std::vector<double> global_well_bottom_head(
+        n_wells, -std::numeric_limits<double>::max());
     if (n_wells > 0) {
         MPI_Allreduce(local_well_cwc_eff_sum.data(),
                       global_well_cwc_eff_sum.data(),
@@ -788,6 +798,12 @@ void NPSAT_FLOW<dim>::assemble_system() {
                       MPI_DOUBLE,
                       MPI_SUM,
                       mpi_communicator);
+        MPI_Allreduce(local_well_bottom_head.data(),
+                      global_well_bottom_head.data(),
+                      static_cast<int>(n_wells),
+                      MPI_DOUBLE,
+                      MPI_MAX,
+                      mpi_communicator);
     }
 
     // --------------------------------------------------
@@ -796,6 +812,8 @@ void NPSAT_FLOW<dim>::assemble_system() {
     // --------------------------------------------------
     unsigned int local_dry_well_count = 0;
     double local_dry_well_requested_total = 0.0;
+    double local_requested_pumping_magnitude = 0.0;
+    double local_pumping_loss_magnitude = 0.0;
 
     for (const auto &well : mnwells.wells)
     {
@@ -803,6 +821,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
         if (well_owner_rank[w_id] == static_cast<unsigned int>(my_rank))
         {
             const double Q_requested = mnwells.pumping_rate(well.q_row);
+            local_requested_pumping_magnitude += std::max(-Q_requested, 0.0);
             const bool well_is_dry =
                 (!uo.sim_opt.confined &&
                  global_well_total_screen_sum[w_id] > wet_screen_length_tol &&
@@ -813,6 +832,30 @@ void NPSAT_FLOW<dim>::assemble_system() {
             {
                 ++local_dry_well_count;
                 local_dry_well_requested_total += Q_requested;
+                local_pumping_loss_magnitude += std::max(-Q_requested, 0.0);
+
+                if (dry_well_log.is_open())
+                {
+                    const auto &dry_well = mnwells.wells[w_id];
+                    const double bottom_head = global_well_bottom_head[w_id];
+                    dry_well_log
+                        << dry_well.Eid << ','
+                        << dry_well.x << ',' << dry_well.y << ','
+                        << dry_well.top << ',' << dry_well.bottom << ',';
+                    if (bottom_head > -0.5 * std::numeric_limits<double>::max())
+                        dry_well_log << bottom_head << ','
+                                     << dry_well.bottom - bottom_head;
+                    else
+                        dry_well_log << "nan,nan";
+                    dry_well_log
+                        << ',' << time_tracking.simulation_step()
+                        << ',' << time_tracking.forcing_step()
+                        << ',' << time_tracking.file_step()
+                        << ',' << (current_spinup_active ? 1 : 0)
+                        << ',' << current_spinup_solve
+                        << ',' << nl_state.nl_iter
+                        << ',' << Q_requested << '\n';
+                }
             }
 
             block_rhs_vector.block(1)(w_id) += Q_at_time;
@@ -826,10 +869,14 @@ void NPSAT_FLOW<dim>::assemble_system() {
         const double global_well_prescribed_total = Utilities::MPI::sum(local_well_prescribed_total, mpi_communicator);
         const unsigned int global_dry_well_count = Utilities::MPI::sum(local_dry_well_count, mpi_communicator);
         const double global_dry_well_requested_total = Utilities::MPI::sum(local_dry_well_requested_total, mpi_communicator);
+        const double global_requested_pumping_magnitude = Utilities::MPI::sum(local_requested_pumping_magnitude, mpi_communicator);
+        const double global_pumping_loss_magnitude = Utilities::MPI::sum(local_pumping_loss_magnitude, mpi_communicator);
 
         last_recharge_total = global_recharge_total;
         last_stream_total = global_stream_total;
         last_well_total = global_well_prescribed_total;
+        last_requested_pumping_magnitude = global_requested_pumping_magnitude;
+        last_pumping_loss_magnitude = global_pumping_loss_magnitude;
         last_net_external_total = global_recharge_total + global_stream_total + global_well_prescribed_total;
         last_dry_well_count = global_dry_well_count;
 
@@ -845,6 +892,9 @@ void NPSAT_FLOW<dim>::assemble_system() {
             pcout << "  Dry-well requested pumping removed: "
                   << std::scientific << global_dry_well_requested_total
                   << std::defaultfloat << std::endl;
+
+        if (dry_well_log.is_open())
+            dry_well_log.flush();
     }
 
     // =====================================================

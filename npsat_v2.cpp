@@ -52,6 +52,8 @@
 #include <cstdint>
 #include <cmath>
 #include <limits>
+#include <iomanip>
+#include <sstream>
 
 #include "npsat_flow/flow_input.h"
 #include "npsat_flow/time_step_tracking.h"
@@ -254,12 +256,17 @@ private:
     double last_recharge_total = 0.0;
     double last_stream_total = 0.0;
     double last_well_total = 0.0;
+    double last_requested_pumping_magnitude = 0.0;
+    double last_pumping_loss_magnitude = 0.0;
     double last_net_external_total = 0.0;
     unsigned int last_dry_well_count = 0;
     double last_head_min = 0.0;
     double last_head_max = 0.0;
     double last_head_mean = 0.0;
     double last_head_update_l2 = 0.0;
+    std::ofstream dry_well_log;
+    bool current_spinup_active = false;
+    unsigned int current_spinup_solve = 0;
 
 
 };
@@ -321,6 +328,31 @@ void NPSAT_FLOW<dim>::run() {
     else
         initialize_initial_head();
 
+    if (uo.dry_well_log != 0)
+    {
+        std::ostringstream dry_log_name;
+        dry_log_name << output_prefix_path() << "_dry_wells_rank_"
+                     << std::setw(4) << std::setfill('0') << my_rank << ".csv";
+        bool dry_log_has_content = false;
+        if (uo.sim_opt.restart_from_checkpoint)
+        {
+            std::ifstream existing_dry_log(dry_log_name.str(), std::ios::binary);
+            dry_log_has_content =
+                existing_dry_log.good() && existing_dry_log.peek() != std::ifstream::traits_type::eof();
+        }
+        const std::ios_base::openmode mode =
+            std::ios::out |
+            (uo.sim_opt.restart_from_checkpoint ? std::ios::app : std::ios::trunc);
+        dry_well_log.open(dry_log_name.str(), mode);
+        AssertThrow(dry_well_log.good(),
+                    ExcMessage("Could not open dry-well log: " + dry_log_name.str()));
+        if (!dry_log_has_content)
+            dry_well_log
+                << "Eid,x,y,top_screen,bot_screen,wt,bot_screen_minus_wt,simulation_step,forcing_step,forcing_file_step,"
+                   "spinup,spinup_solve,nonlinear_iteration,requested_pumping\n";
+        dry_well_log << std::setprecision(16) << std::scientific;
+    }
+
     TrilinosWrappers::MPI::Vector h_accel_owned;
     h_accel_owned.reinit(head_locally_owned_dofs, mpi_communicator);
 
@@ -330,6 +362,8 @@ void NPSAT_FLOW<dim>::run() {
     bool have_previous_spinup_dry_well_count = false;
     unsigned int previous_spinup_dry_well_count = 0;
     unsigned int stable_spinup_dry_well_solves = 0;
+    bool have_previous_spinup_pumping_loss_fraction = false;
+    double previous_spinup_pumping_loss_fraction = 0.0;
     unsigned int consecutive_spinup_passes = 0;
 
     double update_norm;
@@ -363,6 +397,8 @@ void NPSAT_FLOW<dim>::run() {
 
         for (unsigned int spinup_iteration = spinup_iteration_begin; spinup_iteration < spinup_iteration_limit; ++spinup_iteration)
         {
+            current_spinup_active = spinup_active;
+            current_spinup_solve = spinup_active ? spinup_iteration + 1 : 0;
             pcout << "\n==============================================" << std::endl;
             pcout << "Time step " << time_tracking.simulation_step()
                   << " of " << time_tracking.n_sim_steps() << std::endl;
@@ -561,6 +597,9 @@ void NPSAT_FLOW<dim>::run() {
             double spinup_budget_outflow = 0.0;
             double spinup_budget_residual = 0.0;
             double spinup_budget_percent_discrepancy = 0.0;
+            double spinup_pumping_loss_fraction = 0.0;
+            double spinup_pumping_loss_fraction_change = 0.0;
+            bool spinup_pumping_loss_stable = false;
             bool spinup_metrics_pass = false;
             bool spinup_converged = false;
             if (spinup_active)
@@ -612,6 +651,23 @@ void NPSAT_FLOW<dim>::run() {
                 previous_spinup_dry_well_count = last_dry_well_count;
                 have_previous_spinup_dry_well_count = true;
 
+                spinup_pumping_loss_fraction =
+                    last_requested_pumping_magnitude > 0.0
+                        ? last_pumping_loss_magnitude / last_requested_pumping_magnitude
+                        : 0.0;
+                if (have_previous_spinup_pumping_loss_fraction)
+                {
+                    spinup_pumping_loss_fraction_change =
+                        std::abs(spinup_pumping_loss_fraction -
+                                 previous_spinup_pumping_loss_fraction);
+                    spinup_pumping_loss_stable =
+                        spinup_pumping_loss_fraction_change <=
+                        uo.spin_uo.pumping_loss_stability_tolerance;
+                }
+                previous_spinup_pumping_loss_fraction =
+                    spinup_pumping_loss_fraction;
+                have_previous_spinup_pumping_loss_fraction = true;
+
                 const unsigned int completed_solves = spinup_iteration + 1;
                 spinup_metrics_pass =
                     have_previous_spinup_flux &&
@@ -623,8 +679,9 @@ void NPSAT_FLOW<dim>::run() {
                     spinup_head_change_rms <= uo.spin_uo.rms_head_tolerance &&
                     spinup_flux_change_relative_l2 <=
                         uo.spin_uo.flux_relative_l2_tolerance &&
-                    stable_spinup_dry_well_solves >=
-                        uo.spin_uo.stable_dry_well_solves;
+                    spinup_pumping_loss_fraction <=
+                        uo.spin_uo.pumping_loss_fraction_tolerance &&
+                    spinup_pumping_loss_stable;
 
                 if (spinup_metrics_pass)
                     ++consecutive_spinup_passes;
@@ -682,8 +739,25 @@ void NPSAT_FLOW<dim>::run() {
                     pcout << "\n  flux change = unavailable (first recovered spin-up field)";
                 pcout << "\n  dry wells = " << last_dry_well_count
                       << "; unchanged-count solves = "
-                      << stable_spinup_dry_well_solves << " of "
-                      << uo.spin_uo.stable_dry_well_solves
+                      << stable_spinup_dry_well_solves
+                      << " (diagnostic only)"
+                      << "\n  requested pumping = "
+                      << last_requested_pumping_magnitude << " volume/time"
+                      << "\n  pumping loss from dry wells = "
+                      << last_pumping_loss_magnitude << " volume/time"
+                      << "\n  pumping-loss fraction = "
+                      << spinup_pumping_loss_fraction
+                      << "; tolerance = "
+                      << uo.spin_uo.pumping_loss_fraction_tolerance
+                      << "\n  pumping-loss fraction change = ";
+                if (have_previous_spinup_pumping_loss_fraction && spinup_iteration > 0)
+                    pcout << spinup_pumping_loss_fraction_change
+                          << "; stability tolerance = "
+                          << uo.spin_uo.pumping_loss_stability_tolerance
+                          << " (" << (spinup_pumping_loss_stable ? "PASS" : "not yet") << ")";
+                else
+                    pcout << "unavailable (first spin-up solve)";
+                pcout
                       << "\n  convergence metrics = "
                       << (spinup_metrics_pass ? "PASS" : "not yet")
                       << "; consecutive passes = "

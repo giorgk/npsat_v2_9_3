@@ -141,7 +141,9 @@ namespace npsat_flow {
             ("Spinup.FluxRelativeL2Tolerance", po::value<double>()->default_value(1.0e-2), "Maximum relative L2 change between consecutive recovered spin-up flux fields")
             ("Spinup.RMSHeadTolerance", po::value<double>()->default_value(1.0e-1), "Maximum RMS head change between consecutive spin-up solves")
             ("Spinup.ConsecutivePasses", po::value<unsigned int>()->default_value(3), "Required consecutive solves satisfying all spin-up convergence metrics")
-            ("Spinup.StableDryWellSolves", po::value<unsigned int>()->default_value(3), "Required consecutive solves with an unchanged dry-well count")
+            ("Spinup.PumpingLossFractionTolerance", po::value<double>()->default_value(5.0e-3), "Maximum pumping removed by dry wells as a fraction of total requested pumping")
+            ("Spinup.PumpingLossStabilityTolerance", po::value<double>()->default_value(1.0e-4), "Maximum solve-to-solve change in pumping-loss fraction")
+            ("Spinup.StableDryWellSolves", po::value<unsigned int>()->default_value(3), "Deprecated compatibility option; dry-well count is diagnostic only")
 
             //[Solver]
             ("Solver.System_iterations", po::value<int>()->default_value(15000), "Iterations for system solver")
@@ -193,6 +195,7 @@ namespace npsat_flow {
             ("Misc.Print_matrices", po::value<int>()->default_value(1), "Print matrices Debug only")
             ("Misc.Verbose_level", po::value<int>()->default_value(0), "How much output you want [0 1 2]")
             ("Misc.LogFile", po::value<std::string>()->default_value(""), "Detailed nonlinear log file (relative paths use Paths.Output; empty disables it)")
+            ("Misc.Dry_wel_log", po::value<int>()->default_value(0), "Write dry-well occurrences to one CSV file per MPI rank when nonzero")
 
         ;
 
@@ -313,7 +316,8 @@ namespace npsat_flow {
                     uo.spin_uo.flux_relative_l2_tolerance = vm_cfg["Spinup.FluxRelativeL2Tolerance"].as<double>();
                     uo.spin_uo.rms_head_tolerance = vm_cfg["Spinup.RMSHeadTolerance"].as<double>();
                     uo.spin_uo.consecutive_passes = vm_cfg["Spinup.ConsecutivePasses"].as<unsigned int>();
-                    uo.spin_uo.stable_dry_well_solves = vm_cfg["Spinup.StableDryWellSolves"].as<unsigned int>();
+                    uo.spin_uo.pumping_loss_fraction_tolerance = vm_cfg["Spinup.PumpingLossFractionTolerance"].as<double>();
+                    uo.spin_uo.pumping_loss_stability_tolerance = vm_cfg["Spinup.PumpingLossStabilityTolerance"].as<double>();
 
                     if (uo.spin_uo.iterations > 0)
                     {
@@ -328,13 +332,15 @@ namespace npsat_flow {
                             throw std::runtime_error("Spinup.RMSHeadTolerance must be greater than zero.");
                         if (uo.spin_uo.consecutive_passes == 0)
                             throw std::runtime_error("Spinup.ConsecutivePasses must be at least 1.");
-                        if (uo.spin_uo.stable_dry_well_solves == 0)
-                            throw std::runtime_error("Spinup.StableDryWellSolves must be at least 1.");
+                        if (!(uo.spin_uo.pumping_loss_fraction_tolerance >= 0.0) ||
+                            !(uo.spin_uo.pumping_loss_fraction_tolerance <= 1.0))
+                            throw std::runtime_error("Spinup.PumpingLossFractionTolerance must be between zero and one.");
+                        if (!(uo.spin_uo.pumping_loss_stability_tolerance >= 0.0) ||
+                            !(uo.spin_uo.pumping_loss_stability_tolerance <= 1.0))
+                            throw std::runtime_error("Spinup.PumpingLossStabilityTolerance must be between zero and one.");
                         if (uo.spin_uo.consecutive_passes >
                             uo.spin_uo.iterations - uo.spin_uo.minimum_solves + 1)
                             throw std::runtime_error("Spinup.Iterations is too small to permit the requested Spinup.ConsecutivePasses after Spinup.MinimumSolves.");
-                        if (uo.spin_uo.stable_dry_well_solves > uo.spin_uo.iterations)
-                            throw std::runtime_error("Spinup.StableDryWellSolves must not exceed Spinup.Iterations.");
                     }
                 }
 
@@ -409,6 +415,7 @@ namespace npsat_flow {
                     uo.print_matrices = vm_cfg["Misc.Print_matrices"].as<int>() == 1;
                     uo.verbose_level = vm_cfg["Misc.Verbose_level"].as<int>();
                     uo.log_file = vm_cfg["Misc.LogFile"].as<std::string>();
+                    uo.dry_well_log = vm_cfg["Misc.Dry_wel_log"].as<int>();
                 }
             }
             catch (std::exception& E)
