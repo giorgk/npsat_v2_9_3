@@ -817,6 +817,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
     double local_dry_well_requested_total = 0.0;
     double local_requested_pumping_magnitude = 0.0;
     double local_pumping_loss_magnitude = 0.0;
+    std::vector<std::string> local_dry_well_rows;
 
     for (const auto &well : mnwells.wells)
     {
@@ -837,26 +838,26 @@ void NPSAT_FLOW<dim>::assemble_system() {
                 local_dry_well_requested_total += Q_requested;
                 local_pumping_loss_magnitude += std::max(-Q_requested, 0.0);
 
-                if (dry_well_log.is_open())
+                if (uo.dry_well_log != 0)
                 {
                     const auto &dry_well = mnwells.wells[w_id];
                     const double bottom_head = global_well_bottom_head[w_id];
-                    dry_well_log
-                        << dry_well.Eid << ','
-                        << dry_well.x << ',' << dry_well.y << ','
-                        << dry_well.top << ',' << dry_well.bottom << ',';
+                    std::ostringstream row;
+                    row << std::setprecision(16) << std::scientific
+                        << dry_well.Eid << ',' << dry_well.x << ',' << dry_well.y
+                        << ',' << dry_well.top << ',' << dry_well.bottom << ',';
                     if (bottom_head > -0.5 * std::numeric_limits<double>::max())
-                        dry_well_log << bottom_head << ','
-                                     << dry_well.bottom - bottom_head;
+                        row << bottom_head;
                     else
-                        dry_well_log << "nan,nan";
-                    dry_well_log
+                        row << "nan";
+                    row
                         << ',' << time_tracking.simulation_step()
                         << ',' << time_tracking.file_step()
                         << ',' << (current_spinup_active ? 1 : 0)
                         << ',' << current_spinup_solve
                         << ',' << nl_state.nl_iter
-                        << ',' << Q_requested << '\n';
+                        << ',' << Q_requested;
+                    local_dry_well_rows.push_back(row.str());
                 }
             }
 
@@ -895,8 +896,129 @@ void NPSAT_FLOW<dim>::assemble_system() {
                   << std::scientific << global_dry_well_requested_total
                   << std::defaultfloat << std::endl;
 
-        if (dry_well_log.is_open())
-            dry_well_log.flush();
+    }
+
+    if (uo.dry_well_log != 0)
+    {
+        const std::string prefix = output_prefix_path();
+        const std::string rank_string = Utilities::int_to_string(my_rank, 4);
+        const std::string rank_name =
+            prefix + "_dry_wells_rank_" + rank_string + ".csv";
+        {
+            std::ofstream rank_file(rank_name.c_str(), std::ios::out | std::ios::trunc);
+            AssertThrow(rank_file.good(),
+                        ExcMessage("Could not write dry-well rank snapshot: " + rank_name));
+            rank_file
+                << "Eid,x,y,top_screen,bot_screen,wt,simulation_counter,input_data_time_step,"
+                   "spinup,spinup_solve,nonlinear_iteration,requested_pumping\n";
+            for (const auto &row : local_dry_well_rows)
+                rank_file << row << '\n';
+        }
+
+        MPI_Barrier(mpi_communicator);
+        if (my_rank == 0)
+        {
+            struct DryWellSummary
+            {
+                double x = 0.0, y = 0.0, top = 0.0, bottom = 0.0;
+                double minimum_wt = std::numeric_limits<double>::infinity();
+                unsigned long long dry_count = 0;
+                unsigned int simulation_counter = 0, input_step = 0;
+                unsigned int spinup = 0, spinup_solve = 0, nonlinear_iteration = 0;
+            };
+            std::map<int, DryWellSummary> summary;
+            const std::string summary_name = prefix + "_dry_wells_summary.csv";
+
+            // Preserve the accumulated summary across assemblies and restarts.
+            {
+                std::ifstream existing(summary_name.c_str());
+                std::string line;
+                std::getline(existing, line); // header
+                while (std::getline(existing, line))
+                {
+                    if (line.empty())
+                        continue;
+                    std::replace(line.begin(), line.end(), ',', ' ');
+                    std::istringstream values(line);
+                    int eid = 0;
+                    DryWellSummary entry;
+                    if (values >> eid >> entry.x >> entry.y >> entry.top >> entry.bottom
+                               >> entry.minimum_wt >> entry.dry_count
+                               >> entry.simulation_counter >> entry.input_step
+                               >> entry.spinup >> entry.spinup_solve
+                               >> entry.nonlinear_iteration)
+                        summary[eid] = entry;
+                }
+            }
+
+            for (unsigned int rank = 0; rank < n_proc; ++rank)
+            {
+                const std::string source_name =
+                    prefix + "_dry_wells_rank_" + Utilities::int_to_string(rank, 4) + ".csv";
+                std::ifstream source(source_name.c_str());
+                AssertThrow(source.good(),
+                            ExcMessage("Could not read dry-well rank snapshot: " + source_name));
+                std::string line;
+                std::getline(source, line); // header
+                while (std::getline(source, line))
+                {
+                    if (line.empty())
+                        continue;
+                    std::replace(line.begin(), line.end(), ',', ' ');
+                    std::istringstream values(line);
+                    int eid = 0;
+                    double x = 0.0, y = 0.0, top = 0.0, bottom = 0.0, wt = 0.0;
+                    double requested_pumping = 0.0;
+                    unsigned int simulation_counter = 0, input_step = 0;
+                    unsigned int spinup = 0, spinup_solve = 0, nonlinear_iteration = 0;
+                    if (!(values >> eid >> x >> y >> top >> bottom >> wt
+                                 >> simulation_counter >> input_step >> spinup
+                                 >> spinup_solve >> nonlinear_iteration
+                                 >> requested_pumping))
+                        continue;
+
+                    DryWellSummary &entry = summary[eid];
+                    if (entry.dry_count == 0)
+                    {
+                        entry.x = x; entry.y = y; entry.top = top; entry.bottom = bottom;
+                    }
+                    ++entry.dry_count;
+                    if (std::isfinite(wt) && wt < entry.minimum_wt)
+                    {
+                        entry.minimum_wt = wt;
+                        entry.simulation_counter = simulation_counter;
+                        entry.input_step = input_step;
+                        entry.spinup = spinup;
+                        entry.spinup_solve = spinup_solve;
+                        entry.nonlinear_iteration = nonlinear_iteration;
+                    }
+                }
+            }
+
+            std::ofstream output(summary_name.c_str(), std::ios::out | std::ios::trunc);
+            AssertThrow(output.good(),
+                        ExcMessage("Could not write dry-well summary: " + summary_name));
+            output << "Eid,x,y,top_screen,bot_screen,minimum_wt,dry_count,"
+                      "minimum_wt_simulation_counter,minimum_wt_input_data_step,"
+                      "minimum_wt_spinup,minimum_wt_spinup_solve,"
+                      "minimum_wt_nonlinear_iteration\n"
+                   << std::setprecision(16) << std::scientific;
+            for (const auto &item : summary)
+            {
+                const DryWellSummary &entry = item.second;
+                output << item.first << ',' << entry.x << ',' << entry.y << ','
+                       << entry.top << ',' << entry.bottom << ',';
+                if (std::isfinite(entry.minimum_wt))
+                    output << entry.minimum_wt;
+                else
+                    output << "nan";
+                output << ',' << entry.dry_count
+                       << ',' << entry.simulation_counter << ',' << entry.input_step
+                       << ',' << entry.spinup << ',' << entry.spinup_solve
+                       << ',' << entry.nonlinear_iteration << '\n';
+            }
+        }
+        MPI_Barrier(mpi_communicator);
     }
 
     // =====================================================

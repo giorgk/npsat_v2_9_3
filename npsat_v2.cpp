@@ -264,7 +264,6 @@ private:
     double last_head_max = 0.0;
     double last_head_mean = 0.0;
     double last_head_update_l2 = 0.0;
-    std::ofstream dry_well_log;
     bool current_spinup_active = false;
     unsigned int current_spinup_solve = 0;
 
@@ -330,27 +329,45 @@ void NPSAT_FLOW<dim>::run() {
 
     if (uo.dry_well_log != 0)
     {
-        std::ostringstream dry_log_name;
-        dry_log_name << output_prefix_path() << "_dry_wells_rank_"
-                     << std::setw(4) << std::setfill('0') << my_rank << ".csv";
-        bool dry_log_has_content = false;
+        const std::string summary_name =
+            output_prefix_path() + "_dry_wells_summary.csv";
+        if (my_rank == 0 && !uo.sim_opt.restart_from_checkpoint)
+            std::remove(summary_name.c_str());
+        MPI_Barrier(mpi_communicator);
+        pcout << "Dry-well summary enabled: " << summary_name << std::endl;
+    }
+
+    std::ofstream time_step_budget_csv;
+    if (my_rank == 0)
+    {
+        const std::string budget_history_name =
+            output_prefix_path() + "_time_step_budget_history.csv";
+        bool history_has_content = false;
         if (uo.sim_opt.restart_from_checkpoint)
         {
-            std::ifstream existing_dry_log(dry_log_name.str(), std::ios::binary);
-            dry_log_has_content =
-                existing_dry_log.good() && existing_dry_log.peek() != std::ifstream::traits_type::eof();
+            std::ifstream existing_history(budget_history_name.c_str(), std::ios::binary);
+            history_has_content =
+                existing_history.good() &&
+                existing_history.peek() != std::ifstream::traits_type::eof();
         }
-        const std::ios_base::openmode mode =
+        const std::ios_base::openmode history_mode =
             std::ios::out |
             (uo.sim_opt.restart_from_checkpoint ? std::ios::app : std::ios::trunc);
-        dry_well_log.open(dry_log_name.str(), mode);
-        AssertThrow(dry_well_log.good(),
-                    ExcMessage("Could not open dry-well log: " + dry_log_name.str()));
-        if (!dry_log_has_content)
-            dry_well_log
-                << "Eid,x,y,top_screen,bot_screen,wt,bot_screen_minus_wt,simulation_counter,input_data_time_step,"
-                   "spinup,spinup_solve,nonlinear_iteration,requested_pumping\n";
-        dry_well_log << std::setprecision(16) << std::scientific;
+        time_step_budget_csv.open(budget_history_name.c_str(), history_mode);
+        AssertThrow(time_step_budget_csv.good(),
+                    ExcMessage("Could not open time-step budget history: " +
+                               budget_history_name));
+        if (!history_has_content)
+            time_step_budget_csv
+                << "simulation_counter,input_data_time_step,model_step_duration,"
+                   "wall_seconds,wall_minutes,wall_hours,recharge,streams,wells_applied,"
+                   "storage_volume_change,storage_rate,storage_rate_throughput_fraction,"
+                   "dirichlet_inflow,dirichlet_outflow,dirichlet_net_outflow,"
+                   "complete_budget_inflow,complete_budget_outflow,budget_residual,"
+                   "budget_percent_discrepancy,dry_wells,requested_pumping,"
+                   "pumping_loss,pumping_loss_fraction\n";
+        time_step_budget_csv << std::setprecision(16) << std::scientific;
+        pcout << "Time-step budget history: " << budget_history_name << std::endl;
     }
 
     TrilinosWrappers::MPI::Vector h_accel_owned;
@@ -389,6 +406,8 @@ void NPSAT_FLOW<dim>::run() {
         pcout << "Spin-up disabled: Spinup.Iterations = 0." << std::endl;
 
     while (!time_tracking.done()) {
+        const std::chrono::steady_clock::time_point time_step_wall_start =
+            std::chrono::steady_clock::now();
         const bool first_simulation_step = (time_tracking.simulation_step() == 0);
         const bool spinup_active = first_simulation_step && spinup_enabled;
         const unsigned int spinup_iteration_limit =
@@ -854,18 +873,79 @@ void NPSAT_FLOW<dim>::run() {
             save_velocity_per_step(out_prefix);
             MPI_Barrier(mpi_communicator);
 
+            const unsigned int completed_simulation_counter =
+                time_tracking.simulation_step();
+            const unsigned int completed_input_step = time_tracking.file_step();
+            const double completed_model_duration = time_tracking.duration();
             h_old = h_new;
-            if (spinup_converged && uo.spin_uo.exit_after_convergence)
+            const bool exit_after_spinup =
+                spinup_converged && uo.spin_uo.exit_after_convergence;
+            if (exit_after_spinup)
             {
                 save_checkpoint(0);
                 MPI_Barrier(mpi_communicator);
+            }
+            else
+            {
+                time_tracking.advance();
+                save_checkpoint(0);
+            }
+
+            const double local_step_wall_seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                              time_step_wall_start).count();
+            const double step_wall_seconds =
+                Utilities::MPI::max(local_step_wall_seconds, mpi_communicator);
+            const double step_wall_minutes = step_wall_seconds / 60.0;
+            const double step_wall_hours = step_wall_minutes / 60.0;
+            const double pumping_loss_fraction_for_history =
+                last_requested_pumping_magnitude > 0.0
+                    ? last_pumping_loss_magnitude /
+                          last_requested_pumping_magnitude
+                    : 0.0;
+
+            pcout << "Completed simulation counter " << completed_simulation_counter
+                  << " (input data time step " << completed_input_step << ")"
+                  << "\n  Wall time: " << std::fixed << std::setprecision(3)
+                  << step_wall_seconds << " s = " << step_wall_minutes
+                  << " min = " << step_wall_hours << " h"
+                  << std::defaultfloat << std::endl;
+
+            if (my_rank == 0)
+            {
+                time_step_budget_csv
+                    << completed_simulation_counter << ',' << completed_input_step
+                    << ',' << completed_model_duration
+                    << ',' << step_wall_seconds << ',' << step_wall_minutes
+                    << ',' << step_wall_hours
+                    << ',' << last_recharge_total << ',' << last_stream_total
+                    << ',' << last_well_total
+                    << ',' << spinup_storage_volume_change
+                    << ',' << spinup_storage_rate
+                    << ',' << spinup_storage_throughput_fraction
+                    << ',' << spinup_dirichlet_inflow
+                    << ',' << spinup_dirichlet_outflow
+                    << ',' << spinup_dirichlet_net_outflow
+                    << ',' << spinup_budget_inflow
+                    << ',' << spinup_budget_outflow
+                    << ',' << spinup_budget_residual
+                    << ',' << spinup_budget_percent_discrepancy
+                    << ',' << last_dry_well_count
+                    << ',' << last_requested_pumping_magnitude
+                    << ',' << last_pumping_loss_magnitude
+                    << ',' << pumping_loss_fraction_for_history << '\n';
+                time_step_budget_csv.flush();
+                AssertThrow(time_step_budget_csv.good(),
+                            ExcMessage("Failed writing time-step budget history."));
+            }
+
+            if (exit_after_spinup)
+            {
                 pcout << "Spinup.ExitAfterConvergence enabled: successful spin-up outputs "
                          "and checkpoint were written; exiting before transient time stepping."
                       << std::endl;
                 return;
             }
-            time_tracking.advance();
-            save_checkpoint(0);
             // Re-enter the outer loop so TimeStepTracker::done() is checked after
             // advancing. Otherwise a converged spin-up exits step 0 but continues
             // through the stale spin-up for-loop limit.
@@ -882,6 +962,8 @@ void NPSAT_FLOW<dim>::run() {
 
 
 int main(int argc, char **argv) {
+    const std::chrono::steady_clock::time_point full_simulation_start =
+        std::chrono::steady_clock::now();
     try {
         Utilities::MPI::MPI_InitFinalize mpi_initialization(argc,argv,1);
         npsat_flow::Input_ini prm_ini;
@@ -889,6 +971,25 @@ int main(int argc, char **argv) {
             return 0;
         NPSAT_FLOW<3> npsat_flow(0, prm_ini.uo);
         npsat_flow.run();
+
+        const double local_total_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                          full_simulation_start).count();
+        const double total_seconds =
+            Utilities::MPI::max(local_total_seconds, MPI_COMM_WORLD);
+        if (Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0)
+        {
+            const double total_minutes = total_seconds / 60.0;
+            const double total_hours = total_minutes / 60.0;
+            std::cout << "\n==============================================="
+                      << "\nTotal executable wall time"
+                      << "\n  " << std::fixed << std::setprecision(3)
+                      << total_seconds << " s"
+                      << "\n  " << total_minutes << " min"
+                      << "\n  " << total_hours << " h"
+                      << "\n==============================================="
+                      << std::defaultfloat << std::endl;
+        }
     }
     catch (std::exception &exc)
     {

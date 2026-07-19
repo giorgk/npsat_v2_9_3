@@ -197,7 +197,7 @@ namespace npsat_flow {
             ("Misc.Print_matrices", po::value<int>()->default_value(1), "Print matrices Debug only")
             ("Misc.Verbose_level", po::value<int>()->default_value(0), "How much output you want [0 1 2]")
             ("Misc.LogFile", po::value<std::string>()->default_value(""), "Detailed nonlinear log file (relative paths use Paths.Output; empty disables it)")
-            ("Misc.Dry_wel_log", po::value<int>()->default_value(0), "Write dry-well occurrences to one CSV file per MPI rank when nonzero")
+            ("Misc.Dry_wel_log", po::value<int>()->default_value(0), "Maintain per-rank dry-well snapshots and a rank-0 minimum-water-table summary when nonzero")
 
         ;
 
