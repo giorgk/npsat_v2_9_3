@@ -105,6 +105,7 @@ private:
                          const bool spinup_complete_initial_condition = false);
     unsigned int load_checkpoint();
     std::string checkpoint_base_path() const;
+    std::string restart_checkpoint_base_path() const;
 
     // Methods related to assemble system
     void assemble_system();

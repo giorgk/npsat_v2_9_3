@@ -133,7 +133,8 @@ namespace npsat_flow {
             ("Simulation.Delta_time_file", po::value<std::string>(), "Filename with time step data")
             ("Simulation.Confined", po::value<int>()->default_value(0), "Treat aquifer as confined and disable nonlinear unconfined K/Sy behavior")
             ("Simulation.Restart_from_checkpoint", po::value<int>()->default_value(0), "Restart from the last committed checkpoint")
-            ("Simulation.Checkpoint_file", po::value<std::string>()->default_value("npsat_flow.chk"), "Checkpoint basename; relative paths use Paths.Output")
+            ("Simulation.Checkpoint_file", po::value<std::string>()->default_value("npsat_flow.chk"), "Destination checkpoint basename; relative paths use Paths.CheckPointsFolder")
+            ("Simulation.Restart_checkpoint_file", po::value<std::string>()->default_value(""), "Optional checkpoint basename to load; empty loads Simulation.Checkpoint_file")
 
             //[Spinup]
             ("Spinup.Iterations", po::value<unsigned int>()->default_value(30), "Maximum number of accepted first-step spin-up solves; zero disables spin-up")
@@ -304,6 +305,7 @@ namespace npsat_flow {
                     uo.sim_opt.confined = vm_cfg["Simulation.Confined"].as<int>() == 1;
                     uo.sim_opt.restart_from_checkpoint = vm_cfg["Simulation.Restart_from_checkpoint"].as<int>() == 1;
                     uo.sim_opt.checkpoint_file = vm_cfg["Simulation.Checkpoint_file"].as<std::string>();
+                    uo.sim_opt.restart_checkpoint_file = vm_cfg["Simulation.Restart_checkpoint_file"].as<std::string>();
                     if (uo.sim_opt.n_steps < 1)
                         throw std::runtime_error("Simulation.Nsteps must be at least 1.");
                     if (uo.sim_opt.Start_step < 0)

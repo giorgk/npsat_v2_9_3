@@ -14,6 +14,21 @@ std::string NPSAT_FLOW<dim>::checkpoint_base_path() const
 }
 
 template <int dim>
+std::string NPSAT_FLOW<dim>::restart_checkpoint_base_path() const
+{
+  const std::string checkpoint_root =
+      npsat_flow::trim(uo.checkpoint_folder).empty()
+          ? output_root_path()
+          : npsat_flow::resolve_relative_path(uo.main_path,
+                                               uo.checkpoint_folder);
+  const std::string restart_file =
+      npsat_flow::trim(uo.sim_opt.restart_checkpoint_file).empty()
+          ? uo.sim_opt.checkpoint_file
+          : uo.sim_opt.restart_checkpoint_file;
+  return npsat_flow::resolve_relative_path(checkpoint_root, restart_file);
+}
+
+template <int dim>
 void NPSAT_FLOW<dim>::save_checkpoint(
     const unsigned int completed_spinup_iterations,
     const bool spinup_complete_initial_condition)
@@ -138,7 +153,8 @@ template <int dim>
 unsigned int NPSAT_FLOW<dim>::load_checkpoint()
 {
   const std::uint64_t expected_magic = static_cast<std::uint64_t>(0x4e5053415443484bULL);
-  const std::string base = checkpoint_base_path();
+  const std::string base = restart_checkpoint_base_path();
+  const std::string save_base = checkpoint_base_path();
   unsigned int slot = 0, saved_phase = 0, saved_nproc = 0, saved_dim = 0, saved_degree = 0;
   unsigned int saved_start = 0, saved_nsteps = 0, saved_run_step = 0, saved_repeat = 0;
   std::uint64_t saved_global_dofs = 0;
@@ -197,6 +213,10 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
         << ", simulation counter = " << saved_run_step
         << ", completed spin-up solves = " << saved_repeat
         << ", MPI ranks = " << saved_nproc << std::endl;
+  if (save_base != base)
+    pcout << "  Restart source is read-only for this run."
+          << "\n  New checkpoints will be written to " << save_base
+          << ".meta and its slot rank files." << std::endl;
 
   AssertThrow(saved_nproc == n_proc, ExcMessage("Checkpoint requires the same MPI process count."));
   AssertThrow(saved_global_dofs == dof_handler_head.n_dofs(), ExcMessage("Checkpoint head DoF count does not match the current mesh."));
@@ -272,7 +292,9 @@ unsigned int NPSAT_FLOW<dim>::load_checkpoint()
   }
   h_old.compress(VectorOperation::insert);
   time_tracking.restore_simulation_step(saved_run_step);
-  checkpoint_slot = slot;
+  // Continue alternating the loaded set only in legacy in-place restart mode.
+  // A distinct scenario destination starts cleanly with slot 0.
+  checkpoint_slot = (save_base == base ? slot : 1u);
   loaded_spinup_complete_checkpoint =
       saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup_complete);
   if (saved_phase == static_cast<unsigned int>(checkpoint_phase_spinup))

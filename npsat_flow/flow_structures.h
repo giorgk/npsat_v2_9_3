@@ -68,6 +68,7 @@ namespace npsat_flow {
         bool confined = false;
         bool restart_from_checkpoint = false;
         std::string checkpoint_file = "npsat_flow.chk";
+        std::string restart_checkpoint_file;
     };
 
     struct Spinup_uo {
