@@ -79,6 +79,7 @@ namespace npsat_flow {
         unsigned int consecutive_passes = 3;
         double pumping_loss_fraction_tolerance = 5.0e-3; // fraction of requested pumping
         double pumping_loss_stability_tolerance = 1.0e-4;// solve-to-solve fraction change
+        bool exit_after_convergence = false;
     };
 
     struct Solver_uo {

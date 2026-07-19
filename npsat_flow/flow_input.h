@@ -143,6 +143,7 @@ namespace npsat_flow {
             ("Spinup.ConsecutivePasses", po::value<unsigned int>()->default_value(3), "Required consecutive solves satisfying all spin-up convergence metrics")
             ("Spinup.PumpingLossFractionTolerance", po::value<double>()->default_value(5.0e-3), "Maximum pumping removed by dry wells as a fraction of total requested pumping")
             ("Spinup.PumpingLossStabilityTolerance", po::value<double>()->default_value(1.0e-4), "Maximum solve-to-solve change in pumping-loss fraction")
+            ("Spinup.ExitAfterConvergence", po::value<int>()->default_value(0), "Exit after successful spin-up convergence and writing its outputs")
             ("Spinup.StableDryWellSolves", po::value<unsigned int>()->default_value(3), "Deprecated compatibility option; dry-well count is diagnostic only")
 
             //[Solver]
@@ -318,6 +319,7 @@ namespace npsat_flow {
                     uo.spin_uo.consecutive_passes = vm_cfg["Spinup.ConsecutivePasses"].as<unsigned int>();
                     uo.spin_uo.pumping_loss_fraction_tolerance = vm_cfg["Spinup.PumpingLossFractionTolerance"].as<double>();
                     uo.spin_uo.pumping_loss_stability_tolerance = vm_cfg["Spinup.PumpingLossStabilityTolerance"].as<double>();
+                    uo.spin_uo.exit_after_convergence = vm_cfg["Spinup.ExitAfterConvergence"].as<int>() != 0;
 
                     if (uo.spin_uo.iterations > 0)
                     {

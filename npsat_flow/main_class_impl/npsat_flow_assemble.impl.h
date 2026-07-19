@@ -8,7 +8,10 @@
 template <int dim>
 void NPSAT_FLOW<dim>::assemble_system() {
     if (uo.verbose_level > 0)
-        pcout << "Assembling system at time = " << time_tracking.simulation_step() << " months..." << std::endl;
+        pcout << "Assembling system for simulation counter "
+              << time_tracking.simulation_step()
+              << ", input data time step " << time_tracking.file_step()
+              << " (duration " << time_tracking.duration() << ")..." << std::endl;
     double delta_time = time_tracking.duration();
 
     TimerOutput::Scope t(this->computing_timer, "assemble");
@@ -849,7 +852,6 @@ void NPSAT_FLOW<dim>::assemble_system() {
                         dry_well_log << "nan,nan";
                     dry_well_log
                         << ',' << time_tracking.simulation_step()
-                        << ',' << time_tracking.forcing_step()
                         << ',' << time_tracking.file_step()
                         << ',' << (current_spinup_active ? 1 : 0)
                         << ',' << current_spinup_solve

@@ -348,7 +348,7 @@ void NPSAT_FLOW<dim>::run() {
                     ExcMessage("Could not open dry-well log: " + dry_log_name.str()));
         if (!dry_log_has_content)
             dry_well_log
-                << "Eid,x,y,top_screen,bot_screen,wt,bot_screen_minus_wt,simulation_step,forcing_step,forcing_file_step,"
+                << "Eid,x,y,top_screen,bot_screen,wt,bot_screen_minus_wt,simulation_counter,input_data_time_step,"
                    "spinup,spinup_solve,nonlinear_iteration,requested_pumping\n";
         dry_well_log << std::setprecision(16) << std::scientific;
     }
@@ -400,8 +400,13 @@ void NPSAT_FLOW<dim>::run() {
             current_spinup_active = spinup_active;
             current_spinup_solve = spinup_active ? spinup_iteration + 1 : 0;
             pcout << "\n==============================================" << std::endl;
-            pcout << "Time step " << time_tracking.simulation_step()
-                  << " of " << time_tracking.n_sim_steps() << std::endl;
+            pcout << "Simulation counter " << time_tracking.simulation_step()
+                  << " of " << time_tracking.n_sim_steps()
+                  << " (range 0.." << (time_tracking.n_sim_steps() - 1) << ")"
+                  << "\nInput data time step " << time_tracking.file_step()
+                  << " of " << time_tracking.n_file_steps()
+                  << " (cyclic index; range 0.."
+                  << (time_tracking.n_file_steps() - 1) << ")" << std::endl;
             if (time_tracking.simulation_step() == 0 && spinup_iteration_limit > 1)
                 pcout << "Spin-up solve " << (spinup_iteration + 1)
                       << " of at most " << spinup_iteration_limit << std::endl;
@@ -602,41 +607,41 @@ void NPSAT_FLOW<dim>::run() {
             bool spinup_pumping_loss_stable = false;
             bool spinup_metrics_pass = false;
             bool spinup_converged = false;
+
+            // These diagnostics are meaningful for both spin-up solves and
+            // ordinary accepted transient steps.
+            compute_spinup_diagnostics(spinup_head_change,
+                                       spinup_head_change_rms,
+                                       spinup_storage_volume_change,
+                                       spinup_storage_rate,
+                                       spinup_storage_throughput_fraction);
+            compute_dirichlet_boundary_fluxes(spinup_dirichlet_inflow,
+                                              spinup_dirichlet_outflow,
+                                              spinup_dirichlet_net_outflow);
+
+            spinup_budget_inflow =
+                std::max(last_recharge_total, 0.0) +
+                std::max(last_stream_total, 0.0) +
+                std::max(last_well_total, 0.0) +
+                spinup_dirichlet_inflow +
+                std::max(-spinup_storage_rate, 0.0);
+            spinup_budget_outflow =
+                std::max(-last_recharge_total, 0.0) +
+                std::max(-last_stream_total, 0.0) +
+                std::max(-last_well_total, 0.0) +
+                spinup_dirichlet_outflow +
+                std::max(spinup_storage_rate, 0.0);
+            spinup_budget_residual =
+                spinup_budget_inflow - spinup_budget_outflow;
+            const double budget_sum =
+                spinup_budget_inflow + spinup_budget_outflow;
+            spinup_budget_percent_discrepancy =
+                budget_sum > 0.0
+                    ? 200.0 * spinup_budget_residual / budget_sum
+                    : 0.0;
+
             if (spinup_active)
             {
-                compute_spinup_diagnostics(spinup_head_change,
-                                           spinup_head_change_rms,
-                                           spinup_storage_volume_change,
-                                           spinup_storage_rate,
-                                           spinup_storage_throughput_fraction);
-                compute_dirichlet_boundary_fluxes(spinup_dirichlet_inflow,
-                                                  spinup_dirichlet_outflow,
-                                                  spinup_dirichlet_net_outflow);
-
-                // Assemble a complete budget for the currently supported model:
-                // recharge, streams, wells, Dirichlet exchange, and storage.
-                // Positive source components enter the aquifer; positive storage
-                // is accumulation and therefore belongs on the outflow side.
-                spinup_budget_inflow =
-                    std::max(last_recharge_total, 0.0) +
-                    std::max(last_stream_total, 0.0) +
-                    std::max(last_well_total, 0.0) +
-                    spinup_dirichlet_inflow +
-                    std::max(-spinup_storage_rate, 0.0);
-                spinup_budget_outflow =
-                    std::max(-last_recharge_total, 0.0) +
-                    std::max(-last_stream_total, 0.0) +
-                    std::max(-last_well_total, 0.0) +
-                    spinup_dirichlet_outflow +
-                    std::max(spinup_storage_rate, 0.0);
-                spinup_budget_residual =
-                    spinup_budget_inflow - spinup_budget_outflow;
-                const double budget_sum =
-                    spinup_budget_inflow + spinup_budget_outflow;
-                spinup_budget_percent_discrepancy =
-                    budget_sum > 0.0
-                        ? 200.0 * spinup_budget_residual / budget_sum
-                        : 0.0;
                 if (have_previous_spinup_flux)
                     compute_flux_change_diagnostics(previous_spinup_flux_owned,
                                                     spinup_flux_change_max,
@@ -700,69 +705,94 @@ void NPSAT_FLOW<dim>::run() {
                 const double prescribed_throughput =
                     std::abs(last_recharge_total) + std::abs(last_stream_total) +
                     std::abs(last_well_total);
-                pcout << "Spin-up diagnostics:" << std::scientific
-                      << "\n  max |delta h| = " << spinup_head_change
-                      << " m; guard = " << uo.spin_uo.tolerance << " m"
-                      << "\n  RMS delta h = " << spinup_head_change_rms
-                      << " m; tolerance = " << uo.spin_uo.rms_head_tolerance << " m"
-                      << "\n  storage volume change = " << spinup_storage_volume_change
-                      << " volume units"
-                      << "\n  storage rate = " << spinup_storage_rate
-                      << " volume/time"
-                      << "\n  |storage rate| / prescribed-source throughput = "
-                      << spinup_storage_throughput_fraction
-                      << " (throughput = " << prescribed_throughput << " volume/time)"
-                      << "\n  Dirichlet inflow = " << spinup_dirichlet_inflow
-                      << " volume/time"
-                      << "\n  Dirichlet outflow = " << spinup_dirichlet_outflow
-                      << " volume/time"
-                      << "\n  Dirichlet net outflow = "
-                      << spinup_dirichlet_net_outflow << " volume/time"
-                      << "\n  complete budget inflow = " << spinup_budget_inflow
-                      << " volume/time"
-                      << "\n  complete budget outflow = " << spinup_budget_outflow
-                      << " volume/time"
-                      << "\n  complete budget residual (in-out) = "
-                      << spinup_budget_residual << " volume/time"
-                      << "\n  complete budget percent discrepancy = "
-                      << spinup_budget_percent_discrepancy << " %";
+                const unsigned int completed_solves = spinup_iteration + 1;
+                const bool minimum_solves_pass =
+                    completed_solves >= uo.spin_uo.minimum_solves;
+                const bool max_head_pass =
+                    std::isfinite(spinup_head_change) &&
+                    spinup_head_change <= uo.spin_uo.tolerance;
+                const bool rms_head_pass =
+                    std::isfinite(spinup_head_change_rms) &&
+                    spinup_head_change_rms <= uo.spin_uo.rms_head_tolerance;
+                const bool flux_pass =
+                    have_previous_spinup_flux &&
+                    std::isfinite(spinup_flux_change_relative_l2) &&
+                    spinup_flux_change_relative_l2 <=
+                        uo.spin_uo.flux_relative_l2_tolerance;
+                const bool pumping_loss_pass =
+                    spinup_pumping_loss_fraction <=
+                    uo.spin_uo.pumping_loss_fraction_tolerance;
+
+                pcout << "\n========== Spin-up diagnostics ==========" << std::scientific
+                      << "\nHead and storage changes"
+                      << "\n  Maximum |delta h|             : " << spinup_head_change << " m"
+                      << "\n  RMS delta h                   : " << spinup_head_change_rms << " m"
+                      << "\n  Storage volume change         : " << spinup_storage_volume_change << " volume"
+                      << "\n  Storage rate                  : " << spinup_storage_rate << " volume/time"
+                      << "\n  |storage rate| / throughput   : " << spinup_storage_throughput_fraction
+                      << "\n  Prescribed-source throughput  : " << prescribed_throughput << " volume/time"
+                      << "\n\nFlow changes"
+                      << "\n  Maximum |delta q coefficient| : ";
                 if (have_previous_spinup_flux)
-                    pcout << "\n  max |delta q coefficient| = "
-                          << spinup_flux_change_max
-                          << "\n  RMS delta q coefficient = "
-                          << spinup_flux_change_rms
-                          << "\n  relative flux L2 change = "
-                          << spinup_flux_change_relative_l2
-                          << "; tolerance = "
+                    pcout << spinup_flux_change_max
+                          << "\n  RMS delta q coefficient       : " << spinup_flux_change_rms
+                          << "\n  Relative flux L2 change       : " << spinup_flux_change_relative_l2;
+                else
+                    pcout << "unavailable"
+                          << "\n  RMS delta q coefficient       : unavailable"
+                          << "\n  Relative flux L2 change       : unavailable";
+
+                pcout << "\n\nFlow budget"
+                      << "\n  Recharge                      : " << last_recharge_total << " volume/time"
+                      << "\n  Streams                       : " << last_stream_total << " volume/time"
+                      << "\n  Wells (applied)               : " << last_well_total << " volume/time"
+                      << "\n  Dirichlet inflow              : " << spinup_dirichlet_inflow << " volume/time"
+                      << "\n  Dirichlet outflow             : " << spinup_dirichlet_outflow << " volume/time"
+                      << "\n  Dirichlet net outflow         : " << spinup_dirichlet_net_outflow << " volume/time"
+                      << "\n  Complete budget inflow        : " << spinup_budget_inflow << " volume/time"
+                      << "\n  Complete budget outflow       : " << spinup_budget_outflow << " volume/time"
+                      << "\n  Residual (inflow-outflow)     : " << spinup_budget_residual << " volume/time"
+                      << "\n  Percent discrepancy           : " << spinup_budget_percent_discrepancy << " %"
+                      << "\n\nWell diagnostics"
+                      << "\n  Dry wells                     : " << last_dry_well_count
+                      << "\n  Unchanged-count solves        : " << stable_spinup_dry_well_solves
+                      << " (diagnostic only)"
+                      << "\n  Requested pumping             : " << last_requested_pumping_magnitude << " volume/time"
+                      << "\n  Pumping loss from dry wells   : " << last_pumping_loss_magnitude << " volume/time"
+                      << "\n  Pumping-loss fraction         : " << spinup_pumping_loss_fraction
+                      << "\n  Pumping-loss fraction change  : ";
+                if (have_previous_spinup_pumping_loss_fraction && spinup_iteration > 0)
+                    pcout << spinup_pumping_loss_fraction_change;
+                else
+                    pcout << "unavailable";
+
+                pcout << "\n\nTermination criteria"
+                      << "\n  [" << (minimum_solves_pass ? "PASS" : "FAIL") << "] Minimum solves          : "
+                      << completed_solves << " >= " << uo.spin_uo.minimum_solves
+                      << "\n  [" << (max_head_pass ? "PASS" : "FAIL") << "] Maximum |delta h|        : "
+                      << spinup_head_change << " <= " << uo.spin_uo.tolerance << " m"
+                      << "\n  [" << (rms_head_pass ? "PASS" : "FAIL") << "] RMS delta h              : "
+                      << spinup_head_change_rms << " <= " << uo.spin_uo.rms_head_tolerance << " m"
+                      << "\n  [" << (flux_pass ? "PASS" : "FAIL") << "] Relative flux L2         : ";
+                if (have_previous_spinup_flux)
+                    pcout << spinup_flux_change_relative_l2 << " <= "
                           << uo.spin_uo.flux_relative_l2_tolerance;
                 else
-                    pcout << "\n  flux change = unavailable (first recovered spin-up field)";
-                pcout << "\n  dry wells = " << last_dry_well_count
-                      << "; unchanged-count solves = "
-                      << stable_spinup_dry_well_solves
-                      << " (diagnostic only)"
-                      << "\n  requested pumping = "
-                      << last_requested_pumping_magnitude << " volume/time"
-                      << "\n  pumping loss from dry wells = "
-                      << last_pumping_loss_magnitude << " volume/time"
-                      << "\n  pumping-loss fraction = "
-                      << spinup_pumping_loss_fraction
-                      << "; tolerance = "
+                    pcout << "unavailable";
+                pcout << "\n  [" << (pumping_loss_pass ? "PASS" : "FAIL") << "] Pumping-loss fraction    : "
+                      << spinup_pumping_loss_fraction << " <= "
                       << uo.spin_uo.pumping_loss_fraction_tolerance
-                      << "\n  pumping-loss fraction change = ";
+                      << "\n  [" << (spinup_pumping_loss_stable ? "PASS" : "FAIL") << "] Pumping-loss stability   : ";
                 if (have_previous_spinup_pumping_loss_fraction && spinup_iteration > 0)
-                    pcout << spinup_pumping_loss_fraction_change
-                          << "; stability tolerance = "
-                          << uo.spin_uo.pumping_loss_stability_tolerance
-                          << " (" << (spinup_pumping_loss_stable ? "PASS" : "not yet") << ")";
+                    pcout << spinup_pumping_loss_fraction_change << " <= "
+                          << uo.spin_uo.pumping_loss_stability_tolerance;
                 else
-                    pcout << "unavailable (first spin-up solve)";
-                pcout
-                      << "\n  convergence metrics = "
-                      << (spinup_metrics_pass ? "PASS" : "not yet")
-                      << "; consecutive passes = "
-                      << consecutive_spinup_passes << " of "
-                      << uo.spin_uo.consecutive_passes
+                    pcout << "unavailable";
+                pcout << "\n  Metrics this solve             : "
+                      << (spinup_metrics_pass ? "PASS" : "FAIL")
+                      << "\n  Consecutive passes             : "
+                      << consecutive_spinup_passes << " of " << uo.spin_uo.consecutive_passes
+                      << "\n=========================================="
                       << std::defaultfloat << std::endl;
 
                 for (auto dof = flux_locally_owned_dofs.begin();
@@ -770,6 +800,25 @@ void NPSAT_FLOW<dim>::run() {
                     previous_spinup_flux_owned[*dof] = q_new[*dof];
                 previous_spinup_flux_owned.compress(VectorOperation::insert);
                 have_previous_spinup_flux = true;
+            }
+            else
+            {
+                pcout << "\n========== Accepted time-step budget ==========" << std::scientific
+                      << "\n  Recharge                      : " << last_recharge_total << " volume/time"
+                      << "\n  Streams                       : " << last_stream_total << " volume/time"
+                      << "\n  Wells (applied)               : " << last_well_total << " volume/time"
+                      << "\n  Storage volume change         : " << spinup_storage_volume_change << " volume"
+                      << "\n  Storage rate                  : " << spinup_storage_rate << " volume/time"
+                      << "\n  Dirichlet inflow              : " << spinup_dirichlet_inflow << " volume/time"
+                      << "\n  Dirichlet outflow             : " << spinup_dirichlet_outflow << " volume/time"
+                      << "\n  Dirichlet net outflow         : " << spinup_dirichlet_net_outflow << " volume/time"
+                      << "\n  Complete budget inflow        : " << spinup_budget_inflow << " volume/time"
+                      << "\n  Complete budget outflow       : " << spinup_budget_outflow << " volume/time"
+                      << "\n  Residual (inflow-outflow)     : " << spinup_budget_residual << " volume/time"
+                      << "\n  Percent discrepancy           : " << spinup_budget_percent_discrepancy << " %"
+                      << "\n  Dry wells                     : " << last_dry_well_count
+                      << "\n==============================================="
+                      << std::defaultfloat << std::endl;
             }
 
             if (!final_spinup_iteration)
@@ -806,6 +855,15 @@ void NPSAT_FLOW<dim>::run() {
             MPI_Barrier(mpi_communicator);
 
             h_old = h_new;
+            if (spinup_converged && uo.spin_uo.exit_after_convergence)
+            {
+                save_checkpoint(0);
+                MPI_Barrier(mpi_communicator);
+                pcout << "Spinup.ExitAfterConvergence enabled: successful spin-up outputs "
+                         "and checkpoint were written; exiting before transient time stepping."
+                      << std::endl;
+                return;
+            }
             time_tracking.advance();
             save_checkpoint(0);
             // Re-enter the outer loop so TimeStepTracker::done() is checked after

@@ -465,7 +465,10 @@ std::string NPSAT_FLOW<dim>::output_prefix_path() const
 template <int dim>
 void NPSAT_FLOW<dim>::align_time_dependent_data()
 {
-  const unsigned int step = time_tracking.forcing_step();
+  // All time-dependent input files contain n_file_steps entries.  Use the
+  // wrapped file index explicitly so Start_step may span repeated cycles
+  // without exposing an out-of-range logical forcing counter to readers.
+  const unsigned int step = time_tracking.file_step();
 
   gw_recharge.set_time_index(step);
   dirichlet_bc.set_time_index(step);

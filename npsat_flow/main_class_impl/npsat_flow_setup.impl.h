@@ -203,8 +203,10 @@ void NPSAT_FLOW<dim>::rebuild_trace_constraints() {
 
 template <int dim>
 void NPSAT_FLOW<dim>::apply_trace_boundary_conditions() {
-    pcout << "Applying trace boundary conditions for forcing step "
-          << time_tracking.forcing_step() << "..." << std::endl;
+    pcout << "Applying trace boundary conditions for input data time step "
+          << time_tracking.file_step()
+          << " (simulation counter " << time_tracking.simulation_step()
+          << ")..." << std::endl;
 
     for (typename decltype(dirichlet_boundary_map)::const_iterator it =
              dirichlet_boundary_map.begin();
