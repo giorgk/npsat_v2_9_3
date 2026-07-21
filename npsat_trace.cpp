@@ -344,7 +344,8 @@ void NPSAT_TRACE<dim>::run() {
             cached_cell.get_clamped_ref_coords(x, x_ref);
 
             // Calculate the velocity
-            cached_cell.compute_velocity_at_particle(x_ref,u,vmag);
+            cached_cell.compute_velocity_at_particle(x, x_ref,
+                topt.sim_opt.velocity_interpolation, u, vmag);
 
             if (topt.misc_opt.particle_traj_dbg)
               dbg_out << x[0] << " " << x[1] << " " << x[2] << " " << u[0] << " " << u[1] << " " << u[2] << std::endl;

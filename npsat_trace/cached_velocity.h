@@ -74,6 +74,27 @@ namespace npsat_trace {
         std::array<double,6> vn_outward{};
     };
 
+    struct LateralNormal2D
+    {
+        double x = 0.0;
+        double y = 0.0;
+    };
+
+    template <int dim>
+    struct LateralIDWSample
+    {
+        Point<dim> center;
+        double normal_velocity = 0.0;
+        unsigned char normal_index = 0;
+    };
+
+    template <int dim>
+    struct VerticalIDWSample
+    {
+        Point<dim> center;
+        double velocity_z = 0.0;
+    };
+
     /**
          * Return the canonical index of one of the 8 split RT0 subcells.
          *
@@ -165,7 +186,9 @@ namespace npsat_trace {
         using CellIt = typename DoFHandler<dim>::active_cell_iterator;
 
         void init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
-            const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank, Misc_opt &misc_opt, std::ofstream &dbg_cell_list);
+            const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank,
+            const VelocityInterpolationScheme scheme, const IDW_opt &idw_opt,
+            Misc_opt &misc_opt, std::ofstream &dbg_cell_list);
 
         const std::array<double, 4> &get_xv() const { return xv; }
         const std::array<double, 4> &get_yv() const { return yv; }
@@ -174,7 +197,8 @@ namespace npsat_trace {
 
         void clear();
         void get_clamped_ref_coords(const Point<dim> &p, Point<dim> &p_ref);
-        void compute_velocity_at_particle(const Point<dim> &x_ref, Tensor<1,dim> &u_phys, double &vmag_out) const;
+        void compute_velocity_at_particle(const Point<dim> &x_phys, const Point<dim> &x_ref,
+            const VelocityInterpolationScheme scheme, Tensor<1,dim> &u_phys, double &vmag_out) const;
         double directional_bbox_width(const Tensor<1,dim> &direction) const;
 
 
@@ -187,6 +211,10 @@ namespace npsat_trace {
             const Tensor<1,dim> &ex_dir, const Tensor<1,dim> &ey_dir, const Tensor<1,dim> &ez_dir,
             Tensor<1,dim> &dir1, Tensor<1,dim> &dir2) const;
         void build_subcells();
+        void build_idw_cache(const IDW_opt &options);
+        LateralNormal2D build_lateral_normal(const unsigned int face) const;
+        double anisotropic_distance(const Point<dim> &a, const Point<dim> &b) const;
+        Tensor<1, dim> interpolate_idw_velocity(const Point<dim> &x_phys) const;
         void write_subcells_arrays_to_txt(const std::string &filename) const;
         Tensor<1, dim> interpolate_rt0_reference_velocity(const Point<dim> &p_ref) const;
         void locate_subcell_and_local_coords(const Point<dim> &p_ref, unsigned int &subcell_id_out,
@@ -217,6 +245,14 @@ namespace npsat_trace {
 
         // 8 RT0 subcells
         std::array<SubcellRT0Data, 8> subcells{};
+        std::array<LateralNormal2D, 4> lateral_normals{};
+        std::array<LateralIDWSample<dim>, 16> lateral_idw_samples{};
+        std::array<VerticalIDWSample<dim>, 8> vertical_idw_samples{};
+        unsigned int n_lateral_idw_samples = 0;
+        unsigned int n_vertical_idw_samples = 0;
+        double idw_power = 2.0;
+        double idw_proximity_tolerance = 0.01;
+        double idw_anisotropy_ratio = 1.0;
         std::array<double, 4> xv{}, yv{};
         std::array<double, 4> zb{}, zt{};
         Point<dim> bbox_min;
@@ -237,7 +273,9 @@ namespace npsat_trace {
 
     template<int dim>
     void CellVelocityCacheRT0Split3D<dim>::init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
-        const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank, Misc_opt &misc_opt, std::ofstream &dbg_cell_list) {
+        const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank,
+        const VelocityInterpolationScheme scheme, const IDW_opt &idw_options,
+        Misc_opt &misc_opt, std::ofstream &dbg_cell_list) {
 
         static_assert(std::is_same<CellIt, typename DoFHandler<dim>::active_cell_iterator>::value,
             "CellIt must be DoFHandler<dim>::active_cell_iterator");
@@ -277,12 +315,6 @@ namespace npsat_trace {
         }
 
         // ------------------------------------------------------------
-        // Build the 8 RT0 subcells from the outer face subface values
-        // and from the derived inner face values.
-        // ------------------------------------------------------------
-        build_subcells();
-
-        // ------------------------------------------------------------
         // Cache geometry of the extruded hexahedron.
         // The bottom and top faces are assumed to have matching XY.
         // ------------------------------------------------------------
@@ -303,6 +335,11 @@ namespace npsat_trace {
             zb[i] = pb[2];
             zt[i] = pt[2];
         }
+
+        if (scheme == VelocityInterpolationScheme::split_rt0)
+            build_subcells();
+        else
+            build_idw_cache(idw_options);
 
         cache_bilinear_coefficients = misc_opt.cache_bilinear_coefficients;
         if (cache_bilinear_coefficients)
@@ -531,6 +568,206 @@ namespace npsat_trace {
                 subcells[s_top].vn_outward[zm]    = -vz_inner;
             }
         }
+    }
+
+    template<int dim>
+    LateralNormal2D CellVelocityCacheRT0Split3D<dim>::build_lateral_normal(const unsigned int f) const {
+        AssertThrow(f < 4, ExcMessage("Expected a lateral face."));
+
+        const auto face = cell->face(f);
+        double best_dx = 0.0;
+        double best_dy = 0.0;
+        double best_length_sq = 0.0;
+        for (unsigned int i = 0; i < face->n_vertices(); ++i) {
+            for (unsigned int j = i + 1; j < face->n_vertices(); ++j) {
+                const double dx = face->vertex(j)[0] - face->vertex(i)[0];
+                const double dy = face->vertex(j)[1] - face->vertex(i)[1];
+                const double length_sq = dx * dx + dy * dy;
+                if (length_sq > best_length_sq) {
+                    best_dx = dx;
+                    best_dy = dy;
+                    best_length_sq = length_sq;
+                }
+            }
+        }
+
+        AssertThrow(best_length_sq > 1.0e-24,
+                    ExcMessage("Degenerate lateral face in the XY plane."));
+        const double inverse_length = 1.0 / std::sqrt(best_length_sq);
+        LateralNormal2D normal;
+        normal.x = best_dy * inverse_length;
+        normal.y = -best_dx * inverse_length;
+
+        const Point<dim> face_center = face->center();
+        const Point<dim> cell_center = cell->center();
+        const double outward_dot = normal.x * (face_center[0] - cell_center[0])
+                                  + normal.y * (face_center[1] - cell_center[1]);
+        if (outward_dot < 0.0) {
+            normal.x = -normal.x;
+            normal.y = -normal.y;
+        }
+        AssertThrow(std::abs(outward_dot) > 1.0e-12 * std::sqrt(best_length_sq),
+                    ExcMessage("Could not orient lateral face normal."));
+        return normal;
+    }
+
+    template<int dim>
+    void CellVelocityCacheRT0Split3D<dim>::build_idw_cache(const IDW_opt &options) {
+        idw_power = options.power;
+        idw_proximity_tolerance = options.proximity_tolerance;
+        n_lateral_idw_samples = 0;
+        n_vertical_idw_samples = 0;
+
+        const auto xy_distance = [](const Point<dim> &a, const Point<dim> &b) {
+            const double dx = a[0] - b[0];
+            const double dy = a[1] - b[1];
+            return std::sqrt(dx * dx + dy * dy);
+        };
+        const double width_x = xy_distance(cell->face(xm)->center(), cell->face(xp)->center());
+        const double width_y = xy_distance(cell->face(ym)->center(), cell->face(yp)->center());
+        const double horizontal_scale = std::sqrt(width_x * width_y);
+        const double vertical_scale = std::abs(cell->face(zp)->center()[2] - cell->face(zm)->center()[2]);
+        AssertThrow(horizontal_scale > 0.0 && vertical_scale > 0.0,
+                    ExcMessage("Cannot estimate IDW anisotropy for a degenerate cell."));
+        idw_anisotropy_ratio = options.anisotropy_ratio > 0.0
+                             ? options.anisotropy_ratio
+                             : horizontal_scale / vertical_scale;
+
+        Tensor<1,dim> ex_dir, ey_dir, ez_dir;
+        build_cell_ordering_directions(ex_dir, ey_dir, ez_dir);
+
+        for (unsigned int f = xm; f <= yp; ++f) {
+            lateral_normals[f] = build_lateral_normal(f);
+            if (!cell->face(f)->has_children()) {
+                AssertIndexRange(n_lateral_idw_samples, lateral_idw_samples.size());
+                auto &sample = lateral_idw_samples[n_lateral_idw_samples++];
+                sample.center = cell->face(f)->center();
+                sample.normal_velocity = face_subface_vn[f][0];
+                sample.normal_index = static_cast<unsigned char>(f);
+                continue;
+            }
+
+            AssertThrow(cell->face(f)->n_children() == 4,
+                        ExcMessage("Expected exactly 4 lateral subfaces."));
+
+            Tensor<1,dim> dir1, dir2;
+            get_face_ordering_directions(f, ex_dir, ey_dir, ez_dir, dir1, dir2);
+            const Point<dim> face_center = cell->face(f)->center();
+            for (unsigned int child = 0; child < cell->face(f)->n_children(); ++child) {
+                const Point<dim> center = cell->face(f)->child(child)->center();
+                const Tensor<1,dim> offset = center - face_center;
+                const unsigned int q = canonical_slot_from_projected_offsets(offset * dir1, offset * dir2);
+                AssertIndexRange(n_lateral_idw_samples, lateral_idw_samples.size());
+                auto &sample = lateral_idw_samples[n_lateral_idw_samples++];
+                sample.center = center;
+                sample.normal_velocity = face_subface_vn[f][q];
+                sample.normal_index = static_cast<unsigned char>(f);
+            }
+        }
+
+        for (unsigned int f = zm; f <= zp; ++f) {
+            const double outward_to_z = (f == zm ? -1.0 : 1.0);
+            if (!cell->face(f)->has_children()) {
+                AssertIndexRange(n_vertical_idw_samples, vertical_idw_samples.size());
+                auto &sample = vertical_idw_samples[n_vertical_idw_samples++];
+                sample.center = cell->face(f)->center();
+                sample.velocity_z = outward_to_z * face_subface_vn[f][0];
+                continue;
+            }
+
+            AssertThrow(cell->face(f)->n_children() == 4,
+                        ExcMessage("Expected exactly 4 vertical subfaces."));
+
+            Tensor<1,dim> dir1, dir2;
+            get_face_ordering_directions(f, ex_dir, ey_dir, ez_dir, dir1, dir2);
+            const Point<dim> face_center = cell->face(f)->center();
+            for (unsigned int child = 0; child < cell->face(f)->n_children(); ++child) {
+                const Point<dim> center = cell->face(f)->child(child)->center();
+                const Tensor<1,dim> offset = center - face_center;
+                const unsigned int q = canonical_slot_from_projected_offsets(offset * dir1, offset * dir2);
+                AssertIndexRange(n_vertical_idw_samples, vertical_idw_samples.size());
+                auto &sample = vertical_idw_samples[n_vertical_idw_samples++];
+                sample.center = center;
+                sample.velocity_z = outward_to_z * face_subface_vn[f][q];
+            }
+        }
+    }
+
+    template<int dim>
+    double CellVelocityCacheRT0Split3D<dim>::anisotropic_distance(
+        const Point<dim> &a, const Point<dim> &b) const {
+        const double dx = a[0] - b[0];
+        const double dy = a[1] - b[1];
+        const double dz = idw_anisotropy_ratio * (a[2] - b[2]);
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    template<int dim>
+    Tensor<1, dim> CellVelocityCacheRT0Split3D<dim>::interpolate_idw_velocity(
+        const Point<dim> &x_phys) const {
+        AssertThrow(n_lateral_idw_samples > 0 && n_vertical_idw_samples > 0,
+                    ExcMessage("IDW velocity cache has not been initialized."));
+        Tensor<1, dim> velocity;
+
+        unsigned int nearest_lateral = 0;
+        double nearest_lateral_distance = std::numeric_limits<double>::max();
+        for (unsigned int i = 0; i < n_lateral_idw_samples; ++i) {
+            const double distance = anisotropic_distance(x_phys, lateral_idw_samples[i].center);
+            if (distance < nearest_lateral_distance) {
+                nearest_lateral_distance = distance;
+                nearest_lateral = i;
+            }
+        }
+        if (nearest_lateral_distance < idw_proximity_tolerance) {
+            const auto &sample = lateral_idw_samples[nearest_lateral];
+            const auto &normal = lateral_normals[sample.normal_index];
+            velocity[0] = sample.normal_velocity * normal.x;
+            velocity[1] = sample.normal_velocity * normal.y;
+        }
+        else {
+            double weight_sum = 0.0;
+            for (unsigned int i = 0; i < n_lateral_idw_samples; ++i) {
+                const auto &sample = lateral_idw_samples[i];
+                const double distance = anisotropic_distance(x_phys, sample.center);
+                const double weight = 1.0 / std::pow(distance, idw_power);
+                const auto &normal = lateral_normals[sample.normal_index];
+                velocity[0] += weight * sample.normal_velocity * normal.x;
+                velocity[1] += weight * sample.normal_velocity * normal.y;
+                weight_sum += weight;
+            }
+            AssertThrow(weight_sum > 0.0 && std::isfinite(weight_sum),
+                        ExcMessage("Invalid lateral IDW weight sum."));
+            velocity[0] /= weight_sum;
+            velocity[1] /= weight_sum;
+        }
+
+        unsigned int nearest_vertical = 0;
+        double nearest_vertical_distance = std::numeric_limits<double>::max();
+        for (unsigned int i = 0; i < n_vertical_idw_samples; ++i) {
+            const double distance = anisotropic_distance(x_phys, vertical_idw_samples[i].center);
+            if (distance < nearest_vertical_distance) {
+                nearest_vertical_distance = distance;
+                nearest_vertical = i;
+            }
+        }
+        if (nearest_vertical_distance < idw_proximity_tolerance) {
+            velocity[2] = vertical_idw_samples[nearest_vertical].velocity_z;
+        }
+        else {
+            double weighted_velocity = 0.0;
+            double weight_sum = 0.0;
+            for (unsigned int i = 0; i < n_vertical_idw_samples; ++i) {
+                const auto &sample = vertical_idw_samples[i];
+                const double distance = anisotropic_distance(x_phys, sample.center);
+                const double weight = 1.0 / std::pow(distance, idw_power);
+                weighted_velocity += weight * sample.velocity_z;
+                weight_sum += weight;
+            }
+            AssertThrow(weight_sum > 0.0 && std::isfinite(weight_sum),
+                        ExcMessage("Invalid vertical IDW weight sum."));
+            velocity[2] = weighted_velocity / weight_sum;
+        }
+        return velocity;
     }
 
 
@@ -1066,8 +1303,13 @@ namespace npsat_trace {
     }
 
     template<int dim>
-    void CellVelocityCacheRT0Split3D<dim>::compute_velocity_at_particle(const Point<dim> &x_ref, Tensor<1,dim> &u_phys, double &vmag_out) const {
-        u_phys = interpolate_rt0_reference_velocity(x_ref);
+    void CellVelocityCacheRT0Split3D<dim>::compute_velocity_at_particle(
+        const Point<dim> &x_phys, const Point<dim> &x_ref,
+        const VelocityInterpolationScheme scheme, Tensor<1,dim> &u_phys, double &vmag_out) const {
+        if (scheme == VelocityInterpolationScheme::split_rt0)
+            u_phys = interpolate_rt0_reference_velocity(x_ref);
+        else
+            u_phys = interpolate_idw_velocity(x_phys);
         vmag_out = u_phys.norm();
     }
 
@@ -1243,6 +1485,14 @@ namespace npsat_trace {
         face_subface_vn = std::array<std::array<double, 4>, 6>();
 
         subcells = std::array<SubcellRT0Data, 8>();
+        lateral_normals = std::array<LateralNormal2D, 4>();
+        lateral_idw_samples = std::array<LateralIDWSample<dim>, 16>();
+        vertical_idw_samples = std::array<VerticalIDWSample<dim>, 8>();
+        n_lateral_idw_samples = 0;
+        n_vertical_idw_samples = 0;
+        idw_power = 2.0;
+        idw_proximity_tolerance = 0.01;
+        idw_anisotropy_ratio = 1.0;
 
         xv = std::array<double, 4>();
         yv = std::array<double, 4>();

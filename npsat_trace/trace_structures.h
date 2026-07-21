@@ -8,6 +8,19 @@
 
 namespace npsat_trace {
 
+    enum class VelocityInterpolationScheme : unsigned char {
+        split_rt0,
+        idw
+    };
+
+    struct IDW_opt {
+        double power = 2.0;
+        double proximity_tolerance = 0.01;
+        // A positive value overrides the per-cell horizontal/vertical ratio.
+        // Zero selects the automatic geometry-based estimate.
+        double anisotropy_ratio = 0.0;
+    };
+
     struct Sim_opt {
         int maxSteps = 1000;
         double porosity = 0.3;
@@ -23,6 +36,7 @@ namespace npsat_trace {
         int n_max_streamline_steps = 10000;
         int n_max_nonexpanding_steps = 50;
         int max_age = -1;
+        VelocityInterpolationScheme velocity_interpolation = VelocityInterpolationScheme::split_rt0;
     };
 
     struct Misc_opt {
@@ -49,6 +63,7 @@ namespace npsat_trace {
         std::string particles_file;
         std::string delta_time_file;
         Sim_opt sim_opt;
+        IDW_opt idw_opt;
         Misc_opt misc_opt;
         int n_paticles_parallel = 20000;
 

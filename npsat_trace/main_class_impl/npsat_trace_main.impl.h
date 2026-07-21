@@ -227,7 +227,9 @@ npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_ce
         // New cache build path:
         // - rt0_map contains static face gid/sign/flag information
         // - vface contains this step's ghosted RT0 face-normal velocities
-        all_cells_cache[slot].init_cache(cell, rt0_map, vface, my_rank, topt.misc_opt, dbg_cell_list);
+        all_cells_cache[slot].init_cache(cell, rt0_map, vface, my_rank,
+            topt.sim_opt.velocity_interpolation, topt.idw_opt,
+            topt.misc_opt, dbg_cell_list);
         all_cells_cache_valid[slot] = true;
     }
     return all_cells_cache[slot];
