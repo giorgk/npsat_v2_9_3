@@ -69,6 +69,10 @@ void NPSAT_TRACE<dim>::load_data_step(const std::string & file_prefix, unsigned 
     // Load RT0 face-normal velocities for this step
     load_vface_rt0_values_step(file_prefix, step);
 
+    if (topt.sim_opt.velocity_interpolation ==
+        npsat_trace::VelocityInterpolationScheme::cell_idw)
+        build_cell_velocity_samples();
+
     for (unsigned int i = 0; i < all_cells_cache_valid.size(); ++i) {
         all_cells_cache[i].clear();
         all_cells_cache_valid[i] = false;
@@ -214,6 +218,168 @@ void NPSAT_TRACE<dim>::read_water_table_for_step(const std::string &prefix, unsi
 }
 
 template <int dim>
+npsat_trace::CellVelocitySample<dim> make_cell_velocity_sample(
+    const Point<dim> &position, const Tensor<1,dim> &velocity)
+{
+    npsat_trace::CellVelocitySample<dim> sample;
+    sample.position = position;
+    sample.velocity = velocity;
+    return sample;
+}
+
+template <int dim>
+bool NPSAT_TRACE<dim>::outward_face_velocity(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    const unsigned int face_no,
+    double &velocity) const
+{
+    AssertThrow(cell->is_active(), ExcMessage("Expected an active cell."));
+    AssertThrow(!cell->is_artificial(),
+                ExcMessage("Cannot read velocity DoFs from an artificial cell."));
+    AssertIndexRange(face_no, GeometryInfo<dim>::faces_per_cell);
+
+    std::vector<types::global_dof_index> face_dof(fe_flux.n_dofs_per_face());
+    AssertThrow(face_dof.size() == 1,
+                ExcMessage("Cell IDW requires one RT0 DoF per face."));
+
+    if (!cell->face(face_no)->has_children()) {
+        cell->face(face_no)->get_dof_indices(face_dof);
+        const double stored_velocity = vface[face_dof[0]];
+
+        if (cell->at_boundary(face_no)) {
+            velocity = stored_velocity;
+            return true;
+        }
+
+        const typename DoFHandler<dim>::cell_iterator neighbor =
+            cell->neighbor(face_no);
+        if (neighbor->level() < cell->level()) {
+            velocity = stored_velocity;
+            return true;
+        }
+
+        velocity = cell->id() < neighbor->id()
+                 ? stored_velocity
+                 : -stored_velocity;
+        return true;
+    }
+
+    // The parent RT0 face is not written on the coarse side of a refined
+    // interface. Reconstruct its mean from the active neighbor-child faces.
+    double flux_density_times_area = 0.0;
+    double area_sum = 0.0;
+    const unsigned int opposite = face_no ^ 1u;
+    for (unsigned int subface = 0;
+         subface < cell->face(face_no)->n_children();
+         ++subface) {
+        const typename DoFHandler<dim>::active_cell_iterator child =
+            cell->neighbor_child_on_subface(face_no, subface);
+        // A ghost coarse cell may have refined children beyond this rank's
+        // ghost layer. Their DoFs are unavailable, so this cell cannot supply
+        // a complete center-velocity sample on this rank.
+        if (child->is_artificial())
+            return false;
+        child->face(opposite)->get_dof_indices(face_dof);
+        const double child_area = cell->face(face_no)->child(subface)->measure();
+        // Child values are stored outward relative to the refined child;
+        // reverse them to obtain the coarse-cell outward orientation.
+        flux_density_times_area -= vface[face_dof[0]] * child_area;
+        area_sum += child_area;
+    }
+    AssertThrow(area_sum > 0.0, ExcMessage("Refined face has zero area."));
+    velocity = flux_density_times_area / area_sum;
+    return true;
+}
+
+template <int dim>
+bool NPSAT_TRACE<dim>::compute_cell_center_velocity(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    Tensor<1,dim> &velocity) const
+{
+    std::array<double, GeometryInfo<dim>::faces_per_cell> face_velocity;
+    for (unsigned int face = 0;
+         face < GeometryInfo<dim>::faces_per_cell; ++face)
+        if (!outward_face_velocity(cell, face, face_velocity[face]))
+            return false;
+
+    velocity[0] = 0.5 * (-face_velocity[0] + face_velocity[1]);
+    velocity[1] = 0.5 * (-face_velocity[2] + face_velocity[3]);
+    velocity[2] = 0.5 * (-face_velocity[4] + face_velocity[5]);
+    return true;
+}
+
+template <int dim>
+void NPSAT_TRACE<dim>::build_cell_velocity_samples()
+{
+    cell_velocity_samples.clear();
+    cell_velocity_samples.reserve(
+        2 * triangulation.n_locally_owned_active_cells());
+
+    unsigned int skipped_incomplete = 0;
+    unsigned int owned_complete = 0;
+    unsigned int ghost_total = 0;
+    unsigned int ghost_complete = 0;
+    for (typename Triangulation<dim>::active_cell_iterator tria_cell =
+             triangulation.begin_active();
+         tria_cell != triangulation.end(); ++tria_cell) {
+        if (tria_cell->is_artificial())
+            continue;
+
+        if (tria_cell->is_ghost())
+            ++ghost_total;
+
+        // deal.II 9.3.2: construct the DoF iterator explicitly. The newer
+        // as_dof_handler_iterator() convenience interface is not available.
+        typename DoFHandler<dim>::active_cell_iterator flux_cell(
+            &triangulation, tria_cell->level(), tria_cell->index(),
+            &dof_handler_flux);
+
+        Tensor<1,dim> center_velocity;
+        if (!compute_cell_center_velocity(flux_cell, center_velocity)) {
+            AssertThrow(tria_cell->is_ghost(),
+                        ExcMessage("A locally owned cell has incomplete refined-face data."));
+            ++skipped_incomplete;
+            continue;
+        }
+
+        const std::string id = tria_cell->id().to_string();
+        cell_velocity_samples[id] = make_cell_velocity_sample<dim>(
+            tria_cell->center(), center_velocity);
+        if (tria_cell->is_ghost())
+            ++ghost_complete;
+        else
+            ++owned_complete;
+    }
+
+    const unsigned int skipped_global = Utilities::MPI::sum(
+        skipped_incomplete, mpi_communicator);
+    const unsigned int ghost_total_global = Utilities::MPI::sum(
+        ghost_total, mpi_communicator);
+    const unsigned int ghost_complete_global = Utilities::MPI::sum(
+        ghost_complete, mpi_communicator);
+    const unsigned int owned_complete_global = Utilities::MPI::sum(
+        owned_complete, mpi_communicator);
+
+    // Sample availability depends only on the fixed mesh partition and
+    // refinement topology, not on the velocity step. Report it once per run.
+    if (!cell_idw_topology_logged) {
+        const double skipped_percent = ghost_total_global > 0
+            ? 100.0 * static_cast<double>(skipped_global) /
+              static_cast<double>(ghost_total_global)
+            : 0.0;
+        pcout << "cell_idw topology: " << owned_complete_global
+              << " owned-cell samples, "
+              << ghost_complete_global << " usable ghost samples; omitted "
+              << skipped_global << " of " << ghost_total_global
+              << " rank-local ghost samples (" << std::fixed
+              << std::setprecision(1) << skipped_percent
+              << "%) because refined child DoFs were outside the ghost layer."
+              << std::defaultfloat << std::endl;
+        cell_idw_topology_logged = true;
+    }
+}
+
+template <int dim>
 npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_cell_cache(
     const typename DoFHandler<dim>::active_cell_iterator &cell, std::ofstream &dbg_cell_list) {
 
@@ -227,9 +393,44 @@ npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_ce
         // New cache build path:
         // - rt0_map contains static face gid/sign/flag information
         // - vface contains this step's ghosted RT0 face-normal velocities
+        std::vector<npsat_trace::CellVelocitySample<dim> > cloud;
+        if (topt.sim_opt.velocity_interpolation ==
+            npsat_trace::VelocityInterpolationScheme::cell_idw) {
+            std::set<std::string> inserted_ids;
+            for (unsigned int vertex = 0;
+                 vertex < GeometryInfo<dim>::vertices_per_cell; ++vertex) {
+                const unsigned int vertex_id = cell->vertex_index(vertex);
+                AssertIndexRange(vertex_id, vertex_to_cells.size());
+                const std::set<TriaActiveCellIt> &adjacent =
+                    vertex_to_cells[vertex_id];
+                for (typename std::set<TriaActiveCellIt>::const_iterator it =
+                         adjacent.begin(); it != adjacent.end(); ++it) {
+                    const TriaActiveCellIt &tria_cell = *it;
+                    AssertThrow(!tria_cell->is_artificial(),
+                                ExcMessage("A vertex neighbor of an owned cell is artificial."));
+                    const std::string id = tria_cell->id().to_string();
+                    if (!inserted_ids.insert(id).second)
+                        continue;
+                    typename std::unordered_map<std::string,
+                        npsat_trace::CellVelocitySample<dim> >::const_iterator sample =
+                            cell_velocity_samples.find(id);
+                    // A remote ghost cell may be incomplete when reconstructing
+                    // a coarse face whose refined children are artificial on
+                    // this rank. Such a distant sample is safely omitted.
+                    if (sample == cell_velocity_samples.end())
+                        continue;
+                    cloud.push_back(sample->second);
+                }
+            }
+        }
+
+        const std::vector<npsat_trace::CellVelocitySample<dim> > *cloud_ptr =
+            topt.sim_opt.velocity_interpolation ==
+                npsat_trace::VelocityInterpolationScheme::cell_idw
+            ? &cloud : 0;
         all_cells_cache[slot].init_cache(cell, rt0_map, vface, my_rank,
             topt.sim_opt.velocity_interpolation, topt.idw_opt,
-            topt.misc_opt, dbg_cell_list);
+            topt.misc_opt, dbg_cell_list, cloud_ptr);
         all_cells_cache_valid[slot] = true;
     }
     return all_cells_cache[slot];

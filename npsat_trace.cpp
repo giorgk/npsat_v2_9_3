@@ -1,6 +1,7 @@
 
 #include <iostream>
 #include <unordered_map>
+#include <set>
 #include <chrono>
 #include <iomanip>
 
@@ -9,6 +10,7 @@
 #include <deal.II/distributed/fully_distributed_tria.h>
 #include <deal.II/grid/grid_out.h>
 #include <deal.II/grid/filtered_iterator.h>
+#include <deal.II/grid/grid_tools.h>
 #include <deal.II/particles/particle_handler.h>
 #include <deal.II/fe/mapping_q1.h>
 
@@ -49,6 +51,14 @@ private:
   void distribute_particles(const std::vector<npsat_trace::ParticleSeed> &seeds0);
   void load_data_step(const std::string & file_prefix, unsigned int step);
   void load_vface_rt0_values_step(const std::string &prefix, const unsigned int step_no);
+  void build_cell_velocity_samples();
+  bool compute_cell_center_velocity(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    Tensor<1,dim> &velocity) const;
+  bool outward_face_velocity(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    const unsigned int face_no,
+    double &velocity) const;
   void read_particle_well_flows_for_step(const std::string &prefix, unsigned int step);
   void read_water_table_for_step(const std::string &prefix, unsigned int step);
   npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(
@@ -75,6 +85,11 @@ private:
   std::vector<CellId> slot_cellid;
   std::vector<npsat_trace::CellVelocityCacheRT0Split3D<dim>> all_cells_cache;
   std::vector<bool> all_cells_cache_valid;
+  typedef typename Triangulation<dim>::active_cell_iterator TriaActiveCellIt;
+  std::vector<std::set<TriaActiveCellIt> > vertex_to_cells;
+  std::unordered_map<std::string, npsat_trace::CellVelocitySample<dim> >
+    cell_velocity_samples;
+  bool cell_idw_topology_logged = false;
   std::vector<std::vector<npsat_trace::CellWellLink>> slot_cell_well_links;
   std::vector<double> slot_water_table_elevation;
   std::unordered_map<npsat_trace::FlowKey, npsat_trace::WellFlowRecord, npsat_trace::FlowKeyHash> flows_by_cell_well;

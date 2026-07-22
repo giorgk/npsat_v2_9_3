@@ -90,12 +90,12 @@ namespace npsat_trace {
         ("Simulation.MaxNonExpandingSteps", po::value<int>()->default_value(50), "Terminate particles after this many non-expanding trajectory steps")
         ("Simulation.MaxAge", po::value<int>()->default_value(std::numeric_limits<int>::max()), "Maximum total particle travel time")
         ("Simulation.Max_particles_per_iter", po::value<int>()->default_value(20000), "Maximum number of particles per iterations")
-        ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0 or idw")
+        ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0, idw, or cell_idw")
 
-        //[IWD]
-        ("IWD.Power", po::value<double>()->default_value(2.0), "Inverse-distance weighting power")
-        ("IWD.ProximityTolerance", po::value<double>()->default_value(0.01), "Use a sample directly when the anisotropic distance is below this tolerance")
-        ("IWD.AnisotropyRatio", po::value<double>()->default_value(0.0), "Vertical distance multiplier; zero estimates it from cell geometry")
+        //[IDW]
+        ("IDW.Power", po::value<double>()->default_value(2.0), "Inverse-distance weighting power")
+        ("IDW.ProximityTolerance", po::value<double>()->default_value(0.01), "Use a sample directly when the anisotropic distance is below this tolerance")
+        ("IDW.AnisotropyRatio", po::value<double>()->default_value(0.0), "Vertical distance multiplier; zero estimates it from cell geometry")
 
 
         //[Output]
@@ -171,20 +171,22 @@ namespace npsat_trace {
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::split_rt0;
                     else if (interpolation == "idw")
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::idw;
+                    else if (interpolation == "cell_idw")
+                        tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::cell_idw;
                     else
-                        throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0' or 'idw'.");
+                        throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0', 'idw', or 'cell_idw'.");
                 }
 
                 {// IWD
-                    tr_opt.idw_opt.power = vm_cfg["IWD.Power"].as<double>();
-                    tr_opt.idw_opt.proximity_tolerance = vm_cfg["IWD.ProximityTolerance"].as<double>();
-                    tr_opt.idw_opt.anisotropy_ratio = vm_cfg["IWD.AnisotropyRatio"].as<double>();
+                    tr_opt.idw_opt.power = vm_cfg["IDW.Power"].as<double>();
+                    tr_opt.idw_opt.proximity_tolerance = vm_cfg["IDW.ProximityTolerance"].as<double>();
+                    tr_opt.idw_opt.anisotropy_ratio = vm_cfg["IDW.AnisotropyRatio"].as<double>();
                     if (!(tr_opt.idw_opt.power > 0.0))
-                        throw std::runtime_error("IWD.Power must be greater than zero.");
+                        throw std::runtime_error("IDW.Power must be greater than zero.");
                     if (!(tr_opt.idw_opt.proximity_tolerance > 0.0))
-                        throw std::runtime_error("IWD.ProximityTolerance must be greater than zero.");
+                        throw std::runtime_error("IDW.ProximityTolerance must be greater than zero.");
                     if (tr_opt.idw_opt.anisotropy_ratio < 0.0)
-                        throw std::runtime_error("IWD.AnisotropyRatio must be zero (automatic) or greater than zero.");
+                        throw std::runtime_error("IDW.AnisotropyRatio must be zero (automatic) or greater than zero.");
                 }
 
                 {// Misc

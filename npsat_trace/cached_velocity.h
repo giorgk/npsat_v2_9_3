@@ -188,7 +188,8 @@ namespace npsat_trace {
         void init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
             const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank,
             const VelocityInterpolationScheme scheme, const IDW_opt &idw_opt,
-            Misc_opt &misc_opt, std::ofstream &dbg_cell_list);
+            Misc_opt &misc_opt, std::ofstream &dbg_cell_list,
+            const std::vector<CellVelocitySample<dim> > *cell_samples = 0);
 
         const std::array<double, 4> &get_xv() const { return xv; }
         const std::array<double, 4> &get_yv() const { return yv; }
@@ -215,6 +216,9 @@ namespace npsat_trace {
         LateralNormal2D build_lateral_normal(const unsigned int face) const;
         double anisotropic_distance(const Point<dim> &a, const Point<dim> &b) const;
         Tensor<1, dim> interpolate_idw_velocity(const Point<dim> &x_phys) const;
+        void build_cell_idw_cache(const IDW_opt &options,
+                                  const std::vector<CellVelocitySample<dim> > &samples);
+        Tensor<1, dim> interpolate_cell_idw_velocity(const Point<dim> &x_phys) const;
         void write_subcells_arrays_to_txt(const std::string &filename) const;
         Tensor<1, dim> interpolate_rt0_reference_velocity(const Point<dim> &p_ref) const;
         void locate_subcell_and_local_coords(const Point<dim> &p_ref, unsigned int &subcell_id_out,
@@ -253,6 +257,7 @@ namespace npsat_trace {
         double idw_power = 2.0;
         double idw_proximity_tolerance = 0.01;
         double idw_anisotropy_ratio = 1.0;
+        std::vector<CellVelocitySample<dim> > cell_idw_samples;
         std::array<double, 4> xv{}, yv{};
         std::array<double, 4> zb{}, zt{};
         Point<dim> bbox_min;
@@ -275,7 +280,8 @@ namespace npsat_trace {
     void CellVelocityCacheRT0Split3D<dim>::init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
         const TrilinosWrappers::MPI::Vector &vface, unsigned int my_rank,
         const VelocityInterpolationScheme scheme, const IDW_opt &idw_options,
-        Misc_opt &misc_opt, std::ofstream &dbg_cell_list) {
+        Misc_opt &misc_opt, std::ofstream &dbg_cell_list,
+        const std::vector<CellVelocitySample<dim> > *cell_samples) {
 
         static_assert(std::is_same<CellIt, typename DoFHandler<dim>::active_cell_iterator>::value,
             "CellIt must be DoFHandler<dim>::active_cell_iterator");
@@ -305,14 +311,13 @@ namespace npsat_trace {
             }
         }
 
-        // Step 1: build canonical 2x2 face-subface values for all 6 parent faces
-        for (unsigned int f=0; f<GeometryInfo<dim>::faces_per_cell; ++f) {
-            //std::cout << "Face " << f << ": ";
-            face_subface_vn[f] = build_face_subface_values_canonical(f, rt0_map, vface);
-            // for (unsigned int iv=0; iv < face_subface_vn[f].size(); ++iv)
-            //     std::cout << face_subface_vn[f][iv] << " ";
-            // std::cout << std::endl;
-        }
+        // Cell-center IDW uses its precomputed vector cloud and does not need
+        // the current cell's face/subface cache. The established schemes keep
+        // their existing initialization path unchanged.
+        if (scheme != VelocityInterpolationScheme::cell_idw)
+            for (unsigned int f=0; f<GeometryInfo<dim>::faces_per_cell; ++f)
+                face_subface_vn[f] =
+                    build_face_subface_values_canonical(f, rt0_map, vface);
 
         // ------------------------------------------------------------
         // Cache geometry of the extruded hexahedron.
@@ -338,8 +343,13 @@ namespace npsat_trace {
 
         if (scheme == VelocityInterpolationScheme::split_rt0)
             build_subcells();
-        else
+        else if (scheme == VelocityInterpolationScheme::idw)
             build_idw_cache(idw_options);
+        else {
+            AssertThrow(cell_samples != 0 && !cell_samples->empty(),
+                        ExcMessage("Cell IDW requires a non-empty cell velocity cloud."));
+            build_cell_idw_cache(idw_options, *cell_samples);
+        }
 
         cache_bilinear_coefficients = misc_opt.cache_bilinear_coefficients;
         if (cache_bilinear_coefficients)
@@ -767,6 +777,61 @@ namespace npsat_trace {
                         ExcMessage("Invalid vertical IDW weight sum."));
             velocity[2] = weighted_velocity / weight_sum;
         }
+        return velocity;
+    }
+
+    template<int dim>
+    void CellVelocityCacheRT0Split3D<dim>::build_cell_idw_cache(
+        const IDW_opt &options,
+        const std::vector<CellVelocitySample<dim> > &samples) {
+        idw_power = options.power;
+        idw_proximity_tolerance = options.proximity_tolerance;
+
+        const double dx = cell->face(xp)->center().distance(cell->face(xm)->center());
+        const double dy = cell->face(yp)->center().distance(cell->face(ym)->center());
+        const double horizontal_scale = std::sqrt(dx * dy);
+        const double vertical_scale =
+            std::abs(cell->face(zp)->center()[2] - cell->face(zm)->center()[2]);
+        AssertThrow(horizontal_scale > 0.0 && vertical_scale > 0.0,
+                    ExcMessage("Cannot estimate cell IDW anisotropy for a degenerate cell."));
+        idw_anisotropy_ratio = options.anisotropy_ratio > 0.0
+                             ? options.anisotropy_ratio
+                             : horizontal_scale / vertical_scale;
+        cell_idw_samples = samples;
+    }
+
+    template<int dim>
+    Tensor<1, dim> CellVelocityCacheRT0Split3D<dim>::interpolate_cell_idw_velocity(
+        const Point<dim> &x_phys) const {
+        AssertThrow(!cell_idw_samples.empty(),
+                    ExcMessage("Cell IDW velocity cache has not been initialized."));
+
+        unsigned int nearest = 0;
+        double nearest_distance = std::numeric_limits<double>::max();
+        for (unsigned int i = 0; i < cell_idw_samples.size(); ++i) {
+            const double distance = anisotropic_distance(x_phys,
+                                                         cell_idw_samples[i].position);
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest = i;
+            }
+        }
+
+        if (nearest_distance < idw_proximity_tolerance)
+            return cell_idw_samples[nearest].velocity;
+
+        Tensor<1,dim> velocity;
+        double weight_sum = 0.0;
+        for (unsigned int i = 0; i < cell_idw_samples.size(); ++i) {
+            const double distance = anisotropic_distance(x_phys,
+                                                         cell_idw_samples[i].position);
+            const double weight = 1.0 / std::pow(distance, idw_power);
+            velocity += weight * cell_idw_samples[i].velocity;
+            weight_sum += weight;
+        }
+        AssertThrow(weight_sum > 0.0 && std::isfinite(weight_sum),
+                    ExcMessage("Invalid cell IDW weight sum."));
+        velocity /= weight_sum;
         return velocity;
     }
 
@@ -1308,8 +1373,10 @@ namespace npsat_trace {
         const VelocityInterpolationScheme scheme, Tensor<1,dim> &u_phys, double &vmag_out) const {
         if (scheme == VelocityInterpolationScheme::split_rt0)
             u_phys = interpolate_rt0_reference_velocity(x_ref);
-        else
+        else if (scheme == VelocityInterpolationScheme::idw)
             u_phys = interpolate_idw_velocity(x_phys);
+        else
+            u_phys = interpolate_cell_idw_velocity(x_phys);
         vmag_out = u_phys.norm();
     }
 
@@ -1493,6 +1560,7 @@ namespace npsat_trace {
         idw_power = 2.0;
         idw_proximity_tolerance = 0.01;
         idw_anisotropy_ratio = 1.0;
+        cell_idw_samples.clear();
 
         xv = std::array<double, 4>();
         yv = std::array<double, 4>();
