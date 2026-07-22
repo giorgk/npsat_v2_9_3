@@ -316,11 +316,17 @@ void NPSAT_TRACE<dim>::build_cell_velocity_samples()
         2 * triangulation.n_locally_owned_active_cells());
 
     unsigned int skipped_incomplete = 0;
+    unsigned int owned_complete = 0;
+    unsigned int ghost_total = 0;
+    unsigned int ghost_complete = 0;
     for (typename Triangulation<dim>::active_cell_iterator tria_cell =
              triangulation.begin_active();
          tria_cell != triangulation.end(); ++tria_cell) {
         if (tria_cell->is_artificial())
             continue;
+
+        if (tria_cell->is_ghost())
+            ++ghost_total;
 
         // deal.II 9.3.2: construct the DoF iterator explicitly. The newer
         // as_dof_handler_iterator() convenience interface is not available.
@@ -339,14 +345,38 @@ void NPSAT_TRACE<dim>::build_cell_velocity_samples()
         const std::string id = tria_cell->id().to_string();
         cell_velocity_samples[id] = make_cell_velocity_sample<dim>(
             tria_cell->center(), center_velocity);
+        if (tria_cell->is_ghost())
+            ++ghost_complete;
+        else
+            ++owned_complete;
     }
 
-    const unsigned int skipped_global =
-        Utilities::MPI::sum(skipped_incomplete, mpi_communicator);
-    if (skipped_global > 0)
-        pcout << "cell_idw omitted " << skipped_global
-              << " incomplete ghost-cell velocity samples globally."
-              << std::endl;
+    const unsigned int skipped_global = Utilities::MPI::sum(
+        skipped_incomplete, mpi_communicator);
+    const unsigned int ghost_total_global = Utilities::MPI::sum(
+        ghost_total, mpi_communicator);
+    const unsigned int ghost_complete_global = Utilities::MPI::sum(
+        ghost_complete, mpi_communicator);
+    const unsigned int owned_complete_global = Utilities::MPI::sum(
+        owned_complete, mpi_communicator);
+
+    // Sample availability depends only on the fixed mesh partition and
+    // refinement topology, not on the velocity step. Report it once per run.
+    if (!cell_idw_topology_logged) {
+        const double skipped_percent = ghost_total_global > 0
+            ? 100.0 * static_cast<double>(skipped_global) /
+              static_cast<double>(ghost_total_global)
+            : 0.0;
+        pcout << "cell_idw topology: " << owned_complete_global
+              << " owned-cell samples, "
+              << ghost_complete_global << " usable ghost samples; omitted "
+              << skipped_global << " of " << ghost_total_global
+              << " rank-local ghost samples (" << std::fixed
+              << std::setprecision(1) << skipped_percent
+              << "%) because refined child DoFs were outside the ghost layer."
+              << std::defaultfloat << std::endl;
+        cell_idw_topology_logged = true;
+    }
 }
 
 template <int dim>

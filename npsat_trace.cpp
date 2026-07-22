@@ -89,6 +89,7 @@ private:
   std::vector<std::set<TriaActiveCellIt> > vertex_to_cells;
   std::unordered_map<std::string, npsat_trace::CellVelocitySample<dim> >
     cell_velocity_samples;
+  bool cell_idw_topology_logged = false;
   std::vector<std::vector<npsat_trace::CellWellLink>> slot_cell_well_links;
   std::vector<double> slot_water_table_elevation;
   std::unordered_map<npsat_trace::FlowKey, npsat_trace::WellFlowRecord, npsat_trace::FlowKeyHash> flows_by_cell_well;
