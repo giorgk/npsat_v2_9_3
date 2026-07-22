@@ -78,6 +78,12 @@ void NPSAT_TRACE<dim>::load_data_step(const std::string & file_prefix, unsigned 
         all_cells_cache_valid[i] = false;
     }
 
+    for (unsigned int i = 0; i < all_cell_atlas_valid.size(); ++i) {
+        all_cell_atlases[i].clear();
+        all_cell_atlas_valid[i] = false;
+        all_cell_atlas_flow_step[i] = std::numeric_limits<unsigned int>::max();
+    }
+
 
     read_particle_well_flows_for_step(file_prefix, step);
     read_water_table_for_step(file_prefix, step);

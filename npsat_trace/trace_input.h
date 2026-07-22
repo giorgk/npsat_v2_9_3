@@ -90,12 +90,25 @@ namespace npsat_trace {
         ("Simulation.MaxNonExpandingSteps", po::value<int>()->default_value(50), "Terminate particles after this many non-expanding trajectory steps")
         ("Simulation.MaxAge", po::value<int>()->default_value(std::numeric_limits<int>::max()), "Maximum total particle travel time")
         ("Simulation.Max_particles_per_iter", po::value<int>()->default_value(20000), "Maximum number of particles per iterations")
+        ("Simulation.TransportMethod", po::value<std::string>()->default_value("point"), "Transport method: point or trajectory_atlas")
         ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0, idw, or cell_idw")
 
         //[IDW]
         ("IDW.Power", po::value<double>()->default_value(2.0), "Inverse-distance weighting power")
         ("IDW.ProximityTolerance", po::value<double>()->default_value(0.01), "Use a sample directly when the anisotropic distance is below this tolerance")
         ("IDW.AnisotropyRatio", po::value<double>()->default_value(0.0), "Vertical distance multiplier; zero estimates it from cell geometry")
+
+        //[Trajectory atlas]
+        ("Atlas.QuadraturePointsPerDirection", po::value<unsigned int>()->default_value(2), "Tensor-product quadrature points per subface direction")
+        ("Atlas.StoredSamplesPerTrajectory", po::value<unsigned int>()->default_value(8), "Number of time-ordered samples retained on each local atlas trajectory")
+        ("Atlas.MaximumQuerySamples", po::value<unsigned int>()->default_value(32), "Maximum nearby cached samples used by an atlas query")
+        ("Atlas.MaximumLocalSteps", po::value<unsigned int>()->default_value(200), "Maximum integration steps while constructing one cell-local atlas trajectory")
+        ("Atlas.MaximumBranchesPerPacket", po::value<unsigned int>()->default_value(16), "Maximum branches retained after one atlas query")
+        ("Atlas.KernelPower", po::value<double>()->default_value(2.0), "Inverse-distance kernel power for interior atlas queries")
+        ("Atlas.KernelEpsilon", po::value<double>()->default_value(1.0e-6), "Dimensionless regularization for atlas distance weights")
+        ("Atlas.MinimumBranchFraction", po::value<double>()->default_value(1.0e-6), "Discard and renormalize atlas branches below this fraction")
+        ("Atlas.FlowTolerance", po::value<double>()->default_value(1.0e-12), "Absolute flow tolerance used to classify atlas origins and terminals")
+        ("Atlas.BalanceRelativeTolerance", po::value<double>()->default_value(1.0e-5), "Relative cell/trajectory flow-balance diagnostic tolerance")
 
 
         //[Output]
@@ -166,6 +179,13 @@ namespace npsat_trace {
                     tr_opt.sim_opt.n_max_nonexpanding_steps = vm_cfg["Simulation.MaxNonExpandingSteps"].as<int>();
                     tr_opt.sim_opt.max_age = vm_cfg["Simulation.MaxAge"].as<int>();
                     tr_opt.n_paticles_parallel = vm_cfg["Simulation.Max_particles_per_iter"].as<int>();
+                    const std::string transport = vm_cfg["Simulation.TransportMethod"].as<std::string>();
+                    if (transport == "point")
+                        tr_opt.sim_opt.transport_method = TransportMethod::point;
+                    else if (transport == "trajectory_atlas")
+                        tr_opt.sim_opt.transport_method = TransportMethod::trajectory_atlas;
+                    else
+                        throw std::runtime_error("Simulation.TransportMethod must be 'point' or 'trajectory_atlas'.");
                     const std::string interpolation = vm_cfg["Simulation.VelocityInterpolation"].as<std::string>();
                     if (interpolation == "split_rt0")
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::split_rt0;
@@ -175,6 +195,31 @@ namespace npsat_trace {
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::cell_idw;
                     else
                         throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0', 'idw', or 'cell_idw'.");
+                }
+
+                {// Trajectory atlas
+                    tr_opt.atlas_opt.quadrature_points_per_direction = vm_cfg["Atlas.QuadraturePointsPerDirection"].as<unsigned int>();
+                    tr_opt.atlas_opt.stored_samples_per_trajectory = vm_cfg["Atlas.StoredSamplesPerTrajectory"].as<unsigned int>();
+                    tr_opt.atlas_opt.maximum_query_samples = vm_cfg["Atlas.MaximumQuerySamples"].as<unsigned int>();
+                    tr_opt.atlas_opt.maximum_local_steps = vm_cfg["Atlas.MaximumLocalSteps"].as<unsigned int>();
+                    tr_opt.atlas_opt.maximum_branches_per_packet = vm_cfg["Atlas.MaximumBranchesPerPacket"].as<unsigned int>();
+                    tr_opt.atlas_opt.kernel_power = vm_cfg["Atlas.KernelPower"].as<double>();
+                    tr_opt.atlas_opt.kernel_epsilon = vm_cfg["Atlas.KernelEpsilon"].as<double>();
+                    tr_opt.atlas_opt.minimum_branch_fraction = vm_cfg["Atlas.MinimumBranchFraction"].as<double>();
+                    tr_opt.atlas_opt.flow_tolerance = vm_cfg["Atlas.FlowTolerance"].as<double>();
+                    tr_opt.atlas_opt.balance_relative_tolerance = vm_cfg["Atlas.BalanceRelativeTolerance"].as<double>();
+                    if (tr_opt.atlas_opt.quadrature_points_per_direction == 0 ||
+                        tr_opt.atlas_opt.stored_samples_per_trajectory < 2 ||
+                        tr_opt.atlas_opt.maximum_query_samples == 0 ||
+                        tr_opt.atlas_opt.maximum_local_steps == 0 ||
+                        tr_opt.atlas_opt.maximum_branches_per_packet == 0)
+                        throw std::runtime_error("Atlas integer controls must be positive and StoredSamplesPerTrajectory must be at least two.");
+                    if (!(tr_opt.atlas_opt.kernel_power > 0.0) ||
+                        !(tr_opt.atlas_opt.kernel_epsilon > 0.0) ||
+                        tr_opt.atlas_opt.minimum_branch_fraction < 0.0 ||
+                        !(tr_opt.atlas_opt.flow_tolerance > 0.0) ||
+                        !(tr_opt.atlas_opt.balance_relative_tolerance > 0.0))
+                        throw std::runtime_error("Invalid trajectory-atlas floating-point option.");
                 }
 
                 {// IWD

@@ -8,6 +8,11 @@
 
 namespace npsat_trace {
 
+    enum class TransportMethod : unsigned char {
+        point,
+        trajectory_atlas
+    };
+
     enum class VelocityInterpolationScheme : unsigned char {
         split_rt0,
         idw,
@@ -28,6 +33,19 @@ namespace npsat_trace {
         double anisotropy_ratio = 0.0;
     };
 
+    struct Atlas_opt {
+        unsigned int quadrature_points_per_direction = 2;
+        unsigned int stored_samples_per_trajectory = 8;
+        unsigned int maximum_query_samples = 32;
+        unsigned int maximum_local_steps = 200;
+        unsigned int maximum_branches_per_packet = 16;
+        double kernel_power = 2.0;
+        double kernel_epsilon = 1.0e-6;
+        double minimum_branch_fraction = 1.0e-6;
+        double flow_tolerance = 1.0e-12;
+        double balance_relative_tolerance = 1.0e-5;
+    };
+
     struct Sim_opt {
         int maxSteps = 1000;
         double porosity = 0.3;
@@ -43,6 +61,7 @@ namespace npsat_trace {
         int n_max_streamline_steps = 10000;
         int n_max_nonexpanding_steps = 50;
         int max_age = -1;
+        TransportMethod transport_method = TransportMethod::point;
         VelocityInterpolationScheme velocity_interpolation = VelocityInterpolationScheme::split_rt0;
     };
 
@@ -71,6 +90,7 @@ namespace npsat_trace {
         std::string delta_time_file;
         Sim_opt sim_opt;
         IDW_opt idw_opt;
+        Atlas_opt atlas_opt;
         Misc_opt misc_opt;
         int n_paticles_parallel = 20000;
 

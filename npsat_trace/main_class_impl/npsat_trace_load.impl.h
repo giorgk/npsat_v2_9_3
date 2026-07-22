@@ -258,6 +258,13 @@ void NPSAT_TRACE<dim>::setup_system() {
     all_cells_cache.resize(n_local_cells);
     all_cells_cache_valid.assign(n_local_cells, false);
 
+    // One lazy trajectory atlas per locally owned active cell.  Atlas data are
+    // tied to a transient velocity/well-flow step and are rebuilt on demand.
+    all_cell_atlases.resize(n_local_cells);
+    all_cell_atlas_valid.assign(n_local_cells, false);
+    all_cell_atlas_flow_step.assign(n_local_cells,
+                                    std::numeric_limits<unsigned int>::max());
+
     slot_water_table_elevation.assign(n_local_cells, std::numeric_limits<double>::quiet_NaN());
 
     read_cell_well_map_binary_once();

@@ -195,6 +195,15 @@ namespace npsat_trace {
         const std::array<double, 4> &get_yv() const { return yv; }
         const std::array<double, 4> &get_zb() const { return zb; }
         const std::array<double, 4> &get_zt() const { return zt; }
+        const std::array<std::array<double, 4>, 6> &
+        get_face_subface_normal_velocities() const
+        {
+            return face_subface_vn;
+        }
+        void get_canonical_outer_subface_geometry(
+            std::array<std::array<Point<dim>, 4>, 6> &centers,
+            std::array<std::array<double, 4>, 6> &areas,
+            std::array<unsigned int, 6> &counts) const;
 
         void clear();
         void get_clamped_ref_coords(const Point<dim> &p, Point<dim> &p_ref);
@@ -275,6 +284,46 @@ namespace npsat_trace {
 
     template <int dim>
     constexpr unsigned int CellVelocityCacheRT0Split3D<dim>::perm_ccw[4];
+
+    template<int dim>
+    void CellVelocityCacheRT0Split3D<dim>::get_canonical_outer_subface_geometry(
+        std::array<std::array<Point<dim>, 4>, 6> &centers,
+        std::array<std::array<double, 4>, 6> &areas,
+        std::array<unsigned int, 6> &counts) const
+    {
+        centers = std::array<std::array<Point<dim>, 4>, 6>();
+        areas = std::array<std::array<double, 4>, 6>();
+        counts.fill(0u);
+
+        Tensor<1,dim> ex_dir, ey_dir, ez_dir;
+        build_cell_ordering_directions(ex_dir, ey_dir, ez_dir);
+        for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+        {
+            if (!cell->face(f)->has_children())
+            {
+                counts[f] = 1u;
+                centers[f][0] = cell->face(f)->center();
+                areas[f][0] = cell->face(f)->measure();
+                continue;
+            }
+
+            counts[f] = cell->face(f)->n_children();
+            AssertThrow(counts[f] == 4u,
+                        ExcMessage("Trajectory atlas expects four child subfaces."));
+            Tensor<1,dim> dir1, dir2;
+            get_face_ordering_directions(f, ex_dir, ey_dir, ez_dir, dir1, dir2);
+            const Point<dim> parent_center = cell->face(f)->center();
+            for (unsigned int child = 0; child < counts[f]; ++child)
+            {
+                const Point<dim> child_center = cell->face(f)->child(child)->center();
+                const Tensor<1,dim> offset = child_center - parent_center;
+                const unsigned int slot = canonical_slot_from_projected_offsets(
+                    offset * dir1, offset * dir2);
+                centers[f][slot] = child_center;
+                areas[f][slot] = cell->face(f)->child(child)->measure();
+            }
+        }
+    }
 
     template<int dim>
     void CellVelocityCacheRT0Split3D<dim>::init_cache(const CellIt &cell_in, const RT0FaceMap<dim> &rt0_map,
