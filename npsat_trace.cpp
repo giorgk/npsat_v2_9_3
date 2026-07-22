@@ -52,11 +52,13 @@ private:
   void load_data_step(const std::string & file_prefix, unsigned int step);
   void load_vface_rt0_values_step(const std::string &prefix, const unsigned int step_no);
   void build_cell_velocity_samples();
-  Tensor<1,dim> compute_cell_center_velocity(
-    const typename DoFHandler<dim>::active_cell_iterator &cell) const;
-  double outward_face_velocity(
+  bool compute_cell_center_velocity(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
-    const unsigned int face_no) const;
+    Tensor<1,dim> &velocity) const;
+  bool outward_face_velocity(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    const unsigned int face_no,
+    double &velocity) const;
   void read_particle_well_flows_for_step(const std::string &prefix, unsigned int step);
   void read_water_table_for_step(const std::string &prefix, unsigned int step);
   npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(

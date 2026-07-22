@@ -228,9 +228,10 @@ npsat_trace::CellVelocitySample<dim> make_cell_velocity_sample(
 }
 
 template <int dim>
-double NPSAT_TRACE<dim>::outward_face_velocity(
+bool NPSAT_TRACE<dim>::outward_face_velocity(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
-    const unsigned int face_no) const
+    const unsigned int face_no,
+    double &velocity) const
 {
     AssertThrow(cell->is_active(), ExcMessage("Expected an active cell."));
     AssertThrow(!cell->is_artificial(),
@@ -245,17 +246,22 @@ double NPSAT_TRACE<dim>::outward_face_velocity(
         cell->face(face_no)->get_dof_indices(face_dof);
         const double stored_velocity = vface[face_dof[0]];
 
-        if (cell->at_boundary(face_no))
-            return stored_velocity;
+        if (cell->at_boundary(face_no)) {
+            velocity = stored_velocity;
+            return true;
+        }
 
         const typename DoFHandler<dim>::cell_iterator neighbor =
             cell->neighbor(face_no);
-        if (neighbor->level() < cell->level())
-            return stored_velocity;
+        if (neighbor->level() < cell->level()) {
+            velocity = stored_velocity;
+            return true;
+        }
 
-        return cell->id() < neighbor->id()
-             ? stored_velocity
-             : -stored_velocity;
+        velocity = cell->id() < neighbor->id()
+                 ? stored_velocity
+                 : -stored_velocity;
+        return true;
     }
 
     // The parent RT0 face is not written on the coarse side of a refined
@@ -268,8 +274,11 @@ double NPSAT_TRACE<dim>::outward_face_velocity(
          ++subface) {
         const typename DoFHandler<dim>::active_cell_iterator child =
             cell->neighbor_child_on_subface(face_no, subface);
-        AssertThrow(!child->is_artificial(),
-                    ExcMessage("A neighbor child of a locally relevant cell is artificial."));
+        // A ghost coarse cell may have refined children beyond this rank's
+        // ghost layer. Their DoFs are unavailable, so this cell cannot supply
+        // a complete center-velocity sample on this rank.
+        if (child->is_artificial())
+            return false;
         child->face(opposite)->get_dof_indices(face_dof);
         const double child_area = cell->face(face_no)->child(subface)->measure();
         // Child values are stored outward relative to the refined child;
@@ -278,21 +287,25 @@ double NPSAT_TRACE<dim>::outward_face_velocity(
         area_sum += child_area;
     }
     AssertThrow(area_sum > 0.0, ExcMessage("Refined face has zero area."));
-    return flux_density_times_area / area_sum;
+    velocity = flux_density_times_area / area_sum;
+    return true;
 }
 
 template <int dim>
-Tensor<1,dim> NPSAT_TRACE<dim>::compute_cell_center_velocity(
-    const typename DoFHandler<dim>::active_cell_iterator &cell) const
+bool NPSAT_TRACE<dim>::compute_cell_center_velocity(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    Tensor<1,dim> &velocity) const
 {
-    Tensor<1,dim> velocity;
-    velocity[0] = 0.5 * (-outward_face_velocity(cell, 0) +
-                          outward_face_velocity(cell, 1));
-    velocity[1] = 0.5 * (-outward_face_velocity(cell, 2) +
-                          outward_face_velocity(cell, 3));
-    velocity[2] = 0.5 * (-outward_face_velocity(cell, 4) +
-                          outward_face_velocity(cell, 5));
-    return velocity;
+    std::array<double, GeometryInfo<dim>::faces_per_cell> face_velocity;
+    for (unsigned int face = 0;
+         face < GeometryInfo<dim>::faces_per_cell; ++face)
+        if (!outward_face_velocity(cell, face, face_velocity[face]))
+            return false;
+
+    velocity[0] = 0.5 * (-face_velocity[0] + face_velocity[1]);
+    velocity[1] = 0.5 * (-face_velocity[2] + face_velocity[3]);
+    velocity[2] = 0.5 * (-face_velocity[4] + face_velocity[5]);
+    return true;
 }
 
 template <int dim>
@@ -302,6 +315,7 @@ void NPSAT_TRACE<dim>::build_cell_velocity_samples()
     cell_velocity_samples.reserve(
         2 * triangulation.n_locally_owned_active_cells());
 
+    unsigned int skipped_incomplete = 0;
     for (typename Triangulation<dim>::active_cell_iterator tria_cell =
              triangulation.begin_active();
          tria_cell != triangulation.end(); ++tria_cell) {
@@ -314,10 +328,25 @@ void NPSAT_TRACE<dim>::build_cell_velocity_samples()
             &triangulation, tria_cell->level(), tria_cell->index(),
             &dof_handler_flux);
 
+        Tensor<1,dim> center_velocity;
+        if (!compute_cell_center_velocity(flux_cell, center_velocity)) {
+            AssertThrow(tria_cell->is_ghost(),
+                        ExcMessage("A locally owned cell has incomplete refined-face data."));
+            ++skipped_incomplete;
+            continue;
+        }
+
         const std::string id = tria_cell->id().to_string();
         cell_velocity_samples[id] = make_cell_velocity_sample<dim>(
-            tria_cell->center(), compute_cell_center_velocity(flux_cell));
+            tria_cell->center(), center_velocity);
     }
+
+    const unsigned int skipped_global =
+        Utilities::MPI::sum(skipped_incomplete, mpi_communicator);
+    if (skipped_global > 0)
+        pcout << "cell_idw omitted " << skipped_global
+              << " incomplete ghost-cell velocity samples globally."
+              << std::endl;
 }
 
 template <int dim>
@@ -355,8 +384,11 @@ npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_ce
                     typename std::unordered_map<std::string,
                         npsat_trace::CellVelocitySample<dim> >::const_iterator sample =
                             cell_velocity_samples.find(id);
-                    AssertThrow(sample != cell_velocity_samples.end(),
-                                ExcMessage("Missing cell-center velocity sample."));
+                    // A remote ghost cell may be incomplete when reconstructing
+                    // a coarse face whose refined children are artificial on
+                    // this rank. Such a distant sample is safely omitted.
+                    if (sample == cell_velocity_samples.end())
+                        continue;
                     cloud.push_back(sample->second);
                 }
             }
