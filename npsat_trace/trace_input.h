@@ -90,7 +90,7 @@ namespace npsat_trace {
         ("Simulation.MaxNonExpandingSteps", po::value<int>()->default_value(50), "Terminate particles after this many non-expanding trajectory steps")
         ("Simulation.MaxAge", po::value<int>()->default_value(std::numeric_limits<int>::max()), "Maximum total particle travel time")
         ("Simulation.Max_particles_per_iter", po::value<int>()->default_value(20000), "Maximum number of particles per iterations")
-        ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0 or idw")
+        ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0, idw, or cell_idw")
 
         //[IWD]
         ("IWD.Power", po::value<double>()->default_value(2.0), "Inverse-distance weighting power")
@@ -171,8 +171,10 @@ namespace npsat_trace {
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::split_rt0;
                     else if (interpolation == "idw")
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::idw;
+                    else if (interpolation == "cell_idw")
+                        tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::cell_idw;
                     else
-                        throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0' or 'idw'.");
+                        throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0', 'idw', or 'cell_idw'.");
                 }
 
                 {// IWD

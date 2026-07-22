@@ -10,7 +10,14 @@ namespace npsat_trace {
 
     enum class VelocityInterpolationScheme : unsigned char {
         split_rt0,
-        idw
+        idw,
+        cell_idw
+    };
+
+    template <int dim>
+    struct CellVelocitySample {
+        Point<dim> position;
+        Tensor<1,dim> velocity;
     };
 
     struct IDW_opt {

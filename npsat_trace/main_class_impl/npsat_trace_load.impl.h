@@ -216,6 +216,11 @@ void NPSAT_TRACE<dim>::setup_system() {
     // Initialize RT0 face velocity vector (normal velocity / flux density per RT0 face dof)
     vface.reinit(locally_owned_dofs, locally_relevant_dofs, mpi_communicator);
 
+    // Static topology lookup used by the cell-center IDW interpolation.
+    // In a distributed triangulation, cells adjacent to a vertex of an
+    // owned cell are either locally owned or ghost cells.
+    vertex_to_cells = GridTools::vertex_to_cell_map(triangulation);
+
     // Assign user_index(slot) deterministically on locally owned active cells
     triangulation.clear_user_data();
     unsigned int slot = 0;
