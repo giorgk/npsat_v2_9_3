@@ -881,8 +881,12 @@ void NPSAT_FLOW<dim>::output_results(const std::string &prefix) {
 
         const double M00 = local_element_data_rt_0dg0.get_M00(slot);
 
-        const double dS = M00 * (h_new[hdof] - h_old[hdof]);
-        const double dS_rate = dS / time_tracking.duration();
+        const double dS = uo.sim_opt.steady_state
+                              ? 0.0
+                              : M00 * (h_new[hdof] - h_old[hdof]);
+        const double dS_rate = uo.sim_opt.steady_state
+                                   ? 0.0
+                                   : dS / time_tracking.duration();
         dS_out[hdof] = dS_rate;
 
         // --------------------------------------------------------------

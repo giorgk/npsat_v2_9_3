@@ -8,11 +8,21 @@
 template <int dim>
 void NPSAT_FLOW<dim>::assemble_system() {
     if (uo.verbose_level > 0)
+    {
         pcout << "Assembling system for simulation counter "
               << time_tracking.simulation_step()
-              << ", input data time step " << time_tracking.file_step()
-              << " (duration " << time_tracking.duration() << ")..." << std::endl;
+              << ", input data time step " << time_tracking.file_step();
+        if (uo.sim_opt.steady_state)
+            pcout << " (steady state)..." << std::endl;
+        else
+            pcout << " (duration " << time_tracking.duration() << ")..."
+                  << std::endl;
+    }
     double delta_time = time_tracking.duration();
+    // flow_scale multiplies the spatial balance after condensation. It is dt
+    // for backward-Euler transient flow and one for the unscaled steady
+    // equations. The transient expressions below are otherwise unchanged.
+    const double flow_scale = uo.sim_opt.steady_state ? 1.0 : delta_time;
 
     TimerOutput::Scope t(this->computing_timer, "assemble");
 
@@ -116,8 +126,14 @@ void NPSAT_FLOW<dim>::assemble_system() {
     // =====================================================
     // DEFINE LOCAL MATRICES ACCORDING TO THEORY
     // =====================================================
+    // Transient:
     // [A   B^T   C^T] [Q]   [0]
-    // [B   M/dt   0 ] [H] = [F]
+    // [B   M/dt   0 ] [H] = [F + M*H_old/dt]
+    // [C    0     0 ] [Λ]   [g]
+    //
+    // Steady:
+    // [A   B^T   C^T] [Q]   [0]
+    // [B    0     0 ] [H] = [F]
     // [C    0     0 ] [Λ]   [g]
     // =====================================================
     //
@@ -239,15 +255,16 @@ void NPSAT_FLOW<dim>::assemble_system() {
             // --------------------------------------------------
             // Matrix M: ∫ S_s ψ_k ψ_l dΩ  (n_h × n_h)
             // --------------------------------------------------
-            for (unsigned int k = 0; k < n_head_dofs; ++k)
-            {
-                const double psi_k = fe_values_head.shape_value(k, q);
-                for (unsigned int l = 0; l < n_head_dofs; ++l)
+            if (!uo.sim_opt.steady_state)
+                for (unsigned int k = 0; k < n_head_dofs; ++k)
                 {
-                    const double psi_l = fe_values_head.shape_value(l, q);
-                    local_M(k, l) += S_eff * psi_k * psi_l * JxW;
+                    const double psi_k = fe_values_head.shape_value(k, q);
+                    for (unsigned int l = 0; l < n_head_dofs; ++l)
+                    {
+                        const double psi_l = fe_values_head.shape_value(l, q);
+                        local_M(k, l) += S_eff * psi_k * psi_l * JxW;
+                    }
                 }
-            }
         }// End of quadrature point loop
         //pcout << "Cell " << cell_index << " volume: " << cell_volume << " m³" << std::endl;
         print_matrix(local_A, "local_A");
@@ -440,10 +457,13 @@ void NPSAT_FLOW<dim>::assemble_system() {
         print_matrix(D_matrix, "D_matrix");
 
         // =====================================================
-        // COMPUTE K = M + Δt * D (n_h × n_h)
+        // COMPUTE K: transient M + dt*D; steady D
         // =====================================================
         FullMatrix<double> K_matrix(n_head_dofs, n_head_dofs);
-        K_matrix.add(1.0, local_M, delta_time, D_matrix);
+        if (uo.sim_opt.steady_state)
+            K_matrix.add(1.0, D_matrix);
+        else
+            K_matrix.add(1.0, local_M, delta_time, D_matrix);
         print_matrix(K_matrix, "K_matrix");
 
         // Check if K is invertible (should be SPD for dt small enough)
@@ -477,11 +497,11 @@ void NPSAT_FLOW<dim>::assemble_system() {
         // =====================================================
         // COMPUTE LOCAL CONTRIBUTION TO GLOBAL MATRIX
         // =====================================================
-        // Global matrix for Λ is: Ŝ = S - Δt * (E^T * K⁻¹ * E)
-        // TODO change the scaling Dt as the the main document
+        // Global trace matrix:
+        // transient S - dt*E^T*K^-1*E; steady S - E^T*D^-1*E.
         //FullMatrix<double> S_hat_local(n_trace_dofs, n_trace_dofs);
         S_hat_local = S_matrix;
-        S_hat_local.triple_product(K_inv, E_matrix, E_matrix, true, false, -delta_time);
+        S_hat_local.triple_product(K_inv, E_matrix, E_matrix, true, false, -flow_scale);
         S_hat_local.add(1.0, local_GHB);
         print_matrix(S_hat_local, "S_hat_local");
 
@@ -490,14 +510,19 @@ void NPSAT_FLOW<dim>::assemble_system() {
         // =====================================================
         // Compute M * Hⁿ
         //Vector<double> M_H_old(n_head_dofs);
-        local_M.vmult(M_H_old, H_old_local);
+        if (!uo.sim_opt.steady_state)
+            local_M.vmult(M_H_old, H_old_local);
         print_vector(M_H_old, "M_H_old");
 
-        // Compute V = M * Hⁿ + Δt * F
-        // TODO change the scaling Dt as the the main document
+        // Compute V: transient M*H_old + dt*F; steady F.
         //Vector<double> V_vector(n_head_dofs);
-        V_vector = M_H_old;
-        V_vector.add(delta_time, local_F);
+        if (uo.sim_opt.steady_state)
+            V_vector = local_F;
+        else
+        {
+            V_vector = M_H_old;
+            V_vector.add(delta_time, local_F);
+        }
         print_vector(V_vector, "V_vector");
 
         // Compute K⁻¹ * V
@@ -533,10 +558,10 @@ void NPSAT_FLOW<dim>::assemble_system() {
             if (it != local_cell_well_map.end() && it->first == trace_cell->active_cell_index()) {
                 // This cell has one or more wells!
                 // =====================================================
-                // COMPUTE ae = dt * K⁻¹ * E (n_h × n_λ)
+                // COMPUTE ae: transient dt*K^-1*E; steady D^-1*E.
                 // =====================================================
                 K_inv.mmult(ae_matrix, E_matrix);
-                ae_matrix *= delta_time;
+                ae_matrix *= flow_scale;
                 local_element_data_rt_0dg0.set_ae(slot, ae_matrix);
                 print_matrix(ae_matrix, "ae_matrix");
 
@@ -691,8 +716,9 @@ void NPSAT_FLOW<dim>::assemble_system() {
         // STORE LOCAL DATA FOR POST-PROCESSING
         // =====================================================
         // After solving for Λ, we need to recover H and Q:
-        // H^{n+1} = K⁻¹ * [M * H^n + Δt * F - E * Λ^{n+1}]
-        // Q^{n+1} = -A⁻¹ * [B^T * H^{n+1} + C^T * Λ^{n+1}]
+        // Transient: H = K^-1[M*H_old + dt*F - dt*E*Lambda].
+        // Steady:    H = D^-1[F - E*Lambda].
+        // Both:      Q = -A^-1[B^T*H + C^T*Lambda].
 
         {
             local_element_data_rt_0dg0.set_E(slot,E_matrix);

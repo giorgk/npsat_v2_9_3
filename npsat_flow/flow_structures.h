@@ -66,6 +66,10 @@ namespace npsat_flow {
         int Start_step = 0;
         std::string delta_time_file;
         bool confined = false;
+        // Steady mode solves exactly one stress scenario selected by Start_step.
+        // Confined remains an independent option, giving the four combinations
+        // confined/unconfined and steady/transient.
+        bool steady_state = false;
         bool restart_from_checkpoint = false;
         std::string checkpoint_file = "npsat_flow.chk";
         std::string restart_checkpoint_file;

@@ -35,7 +35,14 @@ void NPSAT_FLOW<dim>::set_simulation_data() {
   {// Time step
     pcout << "\tTime step..." << std::endl;
     time_tracking.read_delta_time_file(npsat_flow::resolve_relative_path(input_root, uo.sim_opt.delta_time_file));
-    time_tracking.initialize(uo.sim_opt.n_steps,uo.sim_opt.Start_step);
+    // A steady run is one independent stress scenario. Start_step selects its
+    // input column; Nsteps continues to control transient runs only.
+    const unsigned int solve_count =
+        uo.sim_opt.steady_state ? 1u :
+        static_cast<unsigned int>(uo.sim_opt.n_steps);
+    time_tracking.initialize(solve_count,
+                             uo.sim_opt.Start_step,
+                             !uo.sim_opt.steady_state);
   }
 
   {// Set up recharge

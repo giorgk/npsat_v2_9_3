@@ -405,8 +405,15 @@ void NPSAT_FLOW<dim>::run() {
         nonlinear_log << std::setprecision(16) << std::scientific;
     }
 
-    const bool spinup_enabled = (uo.spin_uo.iterations > 0);
-    if (!spinup_enabled)
+    // A steady solve already converges from IC.Head through the normal
+    // unconfined nonlinear loop. Transient spin-up is therefore disabled.
+    const bool spinup_enabled =
+        (!uo.sim_opt.steady_state && uo.spin_uo.iterations > 0);
+    if (uo.sim_opt.steady_state)
+        pcout << "Steady-state mode: solving input stress scenario "
+              << time_tracking.file_step()
+              << " from IC.Head; transient spin-up is not used." << std::endl;
+    else if (!spinup_enabled)
         pcout << "Spin-up disabled: Spinup.Iterations = 0." << std::endl;
 
     while (!time_tracking.done()) {
@@ -908,7 +915,8 @@ void NPSAT_FLOW<dim>::run() {
             const unsigned int completed_simulation_counter =
                 time_tracking.simulation_step();
             const unsigned int completed_input_step = time_tracking.file_step();
-            const double completed_model_duration = time_tracking.duration();
+            const double completed_model_duration =
+                uo.sim_opt.steady_state ? 0.0 : time_tracking.duration();
             h_old = h_new;
             time_tracking.advance();
             save_checkpoint(0);

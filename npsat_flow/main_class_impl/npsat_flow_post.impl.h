@@ -11,6 +11,9 @@ void NPSAT_FLOW<dim>::compute_heads(){
         pcout << "Recovering heads from trace solution..." << std::endl;
     h_new = 0.0;
     double delta_time = time_tracking.duration();
+    // Steady equations are not time-scaled. Unit scale gives
+    // H = D^-1(F-E*lambda); transient recovery remains unchanged.
+    const double flow_scale = uo.sim_opt.steady_state ? 1.0 : delta_time;
 
     // Preallocate small local objects once (RT0/DG0 fixed sizes)
     const unsigned int n_trace_dofs      = fe_trace.n_dofs_per_cell();
@@ -89,7 +92,7 @@ void NPSAT_FLOW<dim>::compute_heads(){
 
         //rhs = data.V_vector;    // V = M*h_old + Δt*F
         //rhs -= E_lambda;        // V - E*Λ
-        double rhs = V - delta_time * E_lambda;
+        double rhs = V - flow_scale * E_lambda;
 
         // -----------------------------------------------------------------
         // MNW correction (DG0-friendly):
@@ -129,9 +132,9 @@ void NPSAT_FLOW<dim>::compute_heads(){
             // K is scalar for DG0
             const double K_scalar = kinv != 0.0 ? (1.0 / kinv) : 0.0;
             // Modify rhs and denominator
-            rhs += delta_time * sum_cwc_hw;
+            rhs += flow_scale * sum_cwc_hw;
 
-            const double denom = K_scalar + delta_time * sum_cwc;
+            const double denom = K_scalar + flow_scale * sum_cwc;
 
             // Recover head (scalar)
             h_local = rhs / denom;
@@ -299,6 +302,15 @@ void NPSAT_FLOW<dim>::compute_spinup_diagnostics(
 
     storage_volume_change = Utilities::MPI::sum(
         local_storage_volume_change, mpi_communicator);
+    // Storage is absent from the steady equation. Keep the existing report
+    // shape and write zero for fields which do not apply.
+    if (uo.sim_opt.steady_state)
+    {
+        storage_volume_change = 0.0;
+        storage_rate = 0.0;
+        storage_throughput_fraction = 0.0;
+        return;
+    }
     const double delta_time = time_tracking.duration();
     storage_rate = storage_volume_change / delta_time;
 

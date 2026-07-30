@@ -534,7 +534,11 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
 
         const std::uint64_t step_u64 = static_cast<std::uint64_t>(step_no);
         const double t  = time_tracking.file_step();
-        const double dt = time_tracking.duration();
+        // A negative duration marks a steady solution (an infinite physical
+        // step) without changing the binary layout used by the trace reader.
+        const double dt = uo.sim_opt.steady_state
+                              ? -1.0
+                              : time_tracking.duration();
 
         const double sum_d    = static_cast<double>(checksum_sum);
         const double maxabs_d = checksum_maxabs;

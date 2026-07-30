@@ -57,13 +57,18 @@ namespace npsat_flow{
         }
 
         void initialize(const unsigned int n_simulation_steps,
-                    const unsigned int start_file_step)
+                    const unsigned int start_file_step,
+                    const bool cycle_file_steps = true)
         {
             if (delta_t.empty())
                 throw std::runtime_error("TimeStepTracker: delta_t has not been loaded.");
+            if (!cycle_file_steps && start_file_step >= delta_t.size())
+                throw std::runtime_error(
+                    "TimeStepTracker: steady-state Start_step is outside the delta-time file.");
 
             nsteps_sim = n_simulation_steps;
             start_step = start_file_step;
+            cycle_steps = cycle_file_steps;
             isim = 0;
         }
 
@@ -102,7 +107,9 @@ namespace npsat_flow{
 
         unsigned int file_step() const
         {
-            return static_cast<unsigned int>(forcing_step() % delta_t.size());
+            if (cycle_steps)
+                return static_cast<unsigned int>(forcing_step() % delta_t.size());
+            return forcing_step();
         }
 
         double duration() const
@@ -125,6 +132,7 @@ namespace npsat_flow{
         unsigned int nsteps_sim = 0;
         unsigned int start_step = 0;
         unsigned int isim = 0;
+        bool cycle_steps = true;
     };
 
 }
