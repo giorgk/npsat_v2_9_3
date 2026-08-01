@@ -408,6 +408,7 @@ namespace npsat_trace {
             const std::string rank_str = Utilities::int_to_string(my_rank, 4);
             const std::string fn = misc_opt.dbg_prefix + "_rank_" + rank_str + "_init_cell_" + cell->id().to_string();
             dbg_cell_list << fn << std::endl;
+            dbg_cell_list.flush();
             std::cout << "Writing subcells to " << fn << std::endl;
             write_subcells_arrays_to_txt(fn);
         }

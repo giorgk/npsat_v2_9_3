@@ -747,6 +747,10 @@ namespace npsat_trace {
 
         static const int edge_a[4] = {0, 1, 3, 2};
         static const int edge_b[4] = {1, 3, 2, 0};
+        // Edge order follows the physical lateral polygon 0-1-3-2.
+        // deal.II face ids used by the trace cache are:
+        // 0=-x, 1=+x, 2=-y, 3=+y.
+        static const int edge_face[4] = {2, 1, 3, 0};
 
         for (int i = 0; i < 4; ++i) {
             const int a = edge_a[i];
@@ -778,7 +782,7 @@ namespace npsat_trace {
             const double ztop = (1.0 - s) * zt[a] + s * zt[b];
 
             if (pint[2] >= zbot - eps && pint[2] <= ztop + eps) {
-                result.face_index = 2;
+                result.face_index = edge_face[i];
                 result.intersection_point = pint;
                 return FindHexExitResult(result);
             }

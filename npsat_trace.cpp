@@ -4,6 +4,7 @@
 #include <set>
 #include <chrono>
 #include <iomanip>
+#include <queue>
 
 #include <deal.II/base/mpi.h>
 #include <deal.II/distributed/tria.h>
@@ -72,13 +73,13 @@ private:
     const typename DoFHandler<dim>::active_cell_iterator &cell,
     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache,
     unsigned int flow_step,
-    std::ofstream &debug_output);
+    std::ofstream &atlas_debug_output);
   void build_cell_atlas(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache,
     unsigned int flow_step,
     npsat_trace::CellTrajectoryAtlas<dim> &atlas,
-    std::ofstream &debug_output);
+    std::ofstream &atlas_debug_output);
   bool find_owned_cell_for_atlas_packet(
     const Point<dim> &position,
     typename DoFHandler<dim>::active_cell_iterator &cell) const;

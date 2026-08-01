@@ -8,7 +8,12 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <fstream>
+#include <iomanip>
+#include <limits>
 #include <map>
+#include <ostream>
+#include <string>
 #include <vector>
 
 namespace npsat_trace {
@@ -79,6 +84,34 @@ enum class AtlasPacketState : std::uint8_t
         subface = 0,
         well = 1
     };
+
+    inline const char *atlas_origin_kind_name(const AtlasOriginKind kind)
+    {
+        switch (kind)
+        {
+            case AtlasOriginKind::subface:
+                return "subface";
+            case AtlasOriginKind::well:
+                return "well";
+        }
+        return "unknown";
+    }
+
+    inline const char *atlas_terminal_kind_name(const AtlasTerminalKind kind)
+    {
+        switch (kind)
+        {
+            case AtlasTerminalKind::subface:
+                return "subface";
+            case AtlasTerminalKind::well:
+                return "well";
+            case AtlasTerminalKind::stagnant:
+                return "stagnant";
+            case AtlasTerminalKind::unresolved:
+                return "unresolved";
+        }
+        return "unknown";
+    }
 
     /** Downstream boundary from which a backward atlas trajectory starts. */
     struct AtlasOrigin
@@ -475,7 +508,8 @@ inline std::vector<AtlasTrajectorySample<dim> > resample_atlas_trajectory(
         double kernel_epsilon = 1.0e-6;
         double flow_tolerance = 1.0e-12;
         double balance_relative_tolerance = 1.0e-6;
-        double minimum_branch_fraction = 1.0e-6;
+        double minimum_packet_weight = 0.01;
+        double minimum_split_weight = 0.01;
 
         // Physical coordinate scales used by the anisotropic query metric.
         std::array<double, 3> metric_scale{{1.0, 1.0, 1.0}};
@@ -488,6 +522,21 @@ inline std::vector<AtlasTrajectorySample<dim> > resample_atlas_trajectory(
         AtlasTerminal upstream_terminal;
         double flow = 0.0;
         double fraction = 0.0;
+    };
+
+    /**
+     * One trajectory endpoint contributing to a terminal branch.  local_face
+     * stores a 2D coordinate on the terminal face plane for future face-space
+     * interpolation; the current query uses endpoint_position directly.
+     */
+    template <int dim>
+    struct AtlasTerminalEndpointContribution
+    {
+        std::uint32_t trajectory_id = 0;
+        unsigned int trajectory_index = 0;
+        double normalized_weight = 0.0;
+        dealii::Point<dim> endpoint_position;
+        dealii::Point<2> local_face;
     };
 
     /** Result for one terminal branch returned by an interior atlas query. */
@@ -508,6 +557,10 @@ inline std::vector<AtlasTrajectorySample<dim> > resample_atlas_trajectory(
         dealii::Point<dim> advanced_position;
         double advanced_time = 0.0;
         double advanced_length = 0.0;
+
+        // Per-terminal endpoint contributors retained for diagnostics and for
+        // future face-local interpolation of exit points.
+        std::vector<AtlasTerminalEndpointContribution<dim> > endpoint_contributions;
     };
 
     template <int dim>
@@ -516,7 +569,7 @@ inline std::vector<AtlasTrajectorySample<dim> > resample_atlas_trajectory(
         bool valid = false;
         std::vector<AtlasQueryBranch<dim> > branches;
         double retained_fraction = 0.0;
-        double discarded_fraction = 0.0;
+        double redistributed_fraction = 0.0;
     };
 
 /**
@@ -690,31 +743,48 @@ class CellTrajectoryAtlas
         }
 
         AtlasQueryResult<dim> query(const Point<dim> &position,
-                                    const double available_time) const
+                                    const double available_time,
+                                    const double packet_weight = 1.0) const
         {
             AssertThrow(state_ == AtlasBuildState::finalized,
                         dealii::ExcMessage("Trajectory atlas must be finalized before querying."));
             AssertThrow(std::isfinite(available_time) && available_time >= 0.0,
                         dealii::ExcMessage("Available atlas query time must be finite and nonnegative."));
+            AssertThrow(std::isfinite(packet_weight) && packet_weight >= 0.0,
+                        dealii::ExcMessage("Atlas query packet weight must be finite and nonnegative."));
 
+            // Query rule:
+            //   1. Each cached trajectory contributes at most one candidate.
+            //   2. That candidate is the closest projected point on the stored
+            //      polyline, not one arbitrary stored sample from a global cloud.
+            //   3. Trajectory weights are normalized into probabilities.
+            //   4. Probabilities are grouped by terminal; exit locations are
+            //      weighted endpoint averages within each terminal only.
             struct Candidate
             {
-                double distance2;
-                unsigned int trajectory;
-                unsigned int sample;
+                double distance2 = 0.0;
+                double weight = 0.0;
+                unsigned int trajectory = 0;
+                AtlasTrajectorySample<dim> closest_sample;
             };
 
             std::vector<Candidate> candidates;
             for (unsigned int a = 0; a < trajectories_.size(); ++a)
-                for (unsigned int s = 0; s < trajectories_[a].samples.size(); ++s)
-                {
-                    Candidate candidate;
-                    candidate.distance2 = metric_distance_squared(
-                        position, trajectories_[a].samples[s].position);
-                    candidate.trajectory = a;
-                    candidate.sample = s;
+            {
+                const AtlasTrajectory<dim> &trajectory = trajectories_[a];
+                Candidate candidate;
+                candidate.trajectory = a;
+                candidate.closest_sample =
+                    closest_sample_on_trajectory(trajectory, position,
+                                                 candidate.distance2);
+                const double kernel = std::pow(
+                    candidate.distance2 +
+                        options_.kernel_epsilon * options_.kernel_epsilon,
+                    -0.5 * options_.kernel_power);
+                candidate.weight = trajectory.represented_flow * kernel;
+                if (candidate.weight > 0.0 && std::isfinite(candidate.weight))
                     candidates.push_back(candidate);
-                }
+            }
 
             AtlasQueryResult<dim> result;
             if (candidates.empty())
@@ -736,6 +806,8 @@ class CellTrajectoryAtlas
                 double advanced_time = 0.0;
                 double advanced_length = 0.0;
                 Point<dim> advanced_position;
+                Point<dim> endpoint_position;
+                std::vector<AtlasTerminalEndpointContribution<dim> > endpoints;
             };
 
             std::map<AtlasTerminal, BranchAccumulator> accumulators;
@@ -746,19 +818,8 @@ class CellTrajectoryAtlas
                 const Candidate &candidate = candidates[c];
                 const AtlasTrajectory<dim> &trajectory =
                     trajectories_[candidate.trajectory];
-                const AtlasTrajectorySample<dim> &sample =
-                    trajectory.samples[candidate.sample];
-
-                const double control_time = sample_control_time(trajectory, candidate.sample);
-                const double volume_weight =
-                    trajectory.represented_flow * std::max(control_time, options_.flow_tolerance);
-                const double kernel = std::pow(
-                    candidate.distance2 +
-                        options_.kernel_epsilon * options_.kernel_epsilon,
-                    -0.5 * options_.kernel_power);
-                const double weight = volume_weight * kernel;
-                if (!(weight > 0.0) || !std::isfinite(weight))
-                    continue;
+                const AtlasTrajectorySample<dim> &sample = candidate.closest_sample;
+                const double weight = candidate.weight;
 
                 const double remaining_time =
                     std::max(trajectory.total_time() - sample.backward_time, 0.0);
@@ -767,6 +828,8 @@ class CellTrajectoryAtlas
                 const double advance_time = std::min(available_time, remaining_time);
                 const AtlasTrajectorySample<dim> advanced =
                     trajectory.sample_at_time(sample.backward_time + advance_time);
+                const AtlasTrajectorySample<dim> endpoint =
+                    trajectory.samples.back();
 
                 BranchAccumulator &acc = accumulators[trajectory.upstream_terminal];
                 acc.weight += weight;
@@ -776,24 +839,32 @@ class CellTrajectoryAtlas
                 acc.advanced_length +=
                     weight * std::max(advanced.aquifer_length - sample.aquifer_length, 0.0);
                 for (unsigned int d = 0; d < dim; ++d)
+                {
                     acc.advanced_position[d] += weight * advanced.position[d];
+                    acc.endpoint_position[d] += weight * endpoint.position[d];
+                }
+                AtlasTerminalEndpointContribution<dim> endpoint_contribution;
+                endpoint_contribution.trajectory_id = trajectory.id;
+                endpoint_contribution.trajectory_index = candidate.trajectory;
+                endpoint_contribution.normalized_weight = weight;
+                endpoint_contribution.endpoint_position = endpoint.position;
+                endpoint_contribution.local_face =
+                    terminal_face_local_coordinates(trajectory.upstream_terminal,
+                                                    endpoint.position);
+                acc.endpoints.push_back(endpoint_contribution);
                 total_kernel_weight += weight;
             }
 
             if (!(total_kernel_weight > 0.0))
                 return result;
 
+            std::vector<AtlasQueryBranch<dim> > candidate_branches;
             for (typename std::map<AtlasTerminal, BranchAccumulator>::const_iterator it =
                     accumulators.begin();
                 it != accumulators.end(); ++it)
             {
                 const BranchAccumulator &acc = it->second;
                 const double raw_fraction = acc.weight / total_kernel_weight;
-                if (raw_fraction < options_.minimum_branch_fraction)
-                {
-                    result.discarded_fraction += raw_fraction;
-                    continue;
-                }
 
                 AtlasQueryBranch<dim> branch;
                 branch.terminal = it->first;
@@ -805,14 +876,93 @@ class CellTrajectoryAtlas
                 branch.reaches_terminal =
                     branch.remaining_time <= available_time + options_.flow_tolerance;
                 for (unsigned int d = 0; d < dim; ++d)
-                    branch.advanced_position[d] = acc.advanced_position[d] / acc.weight;
+                    branch.advanced_position[d] =
+                        branch.reaches_terminal
+                        ? acc.endpoint_position[d] / acc.weight
+                        : acc.advanced_position[d] / acc.weight;
+                branch.endpoint_contributions = acc.endpoints;
+                for (unsigned int e = 0;
+                     e < branch.endpoint_contributions.size(); ++e)
+                    branch.endpoint_contributions[e].normalized_weight /= acc.weight;
 
-                result.retained_fraction += branch.fraction;
-                result.branches.push_back(branch);
+                candidate_branches.push_back(branch);
             }
 
-            // Removed tiny branches are deliberately reported, then the retained
-            // branches are normalized so packet splitting remains conservative.
+            std::sort(candidate_branches.begin(), candidate_branches.end(),
+                [](const AtlasQueryBranch<dim> &a,
+                   const AtlasQueryBranch<dim> &b) {
+                    return a.fraction > b.fraction;
+                });
+
+            // Small packets represent small flow amounts, so splitting them
+            // into many tiny descendants creates noise without adding useful
+            // mass resolution.  Pruned branch probability is redistributed by
+            // renormalizing the retained branch fractions below; no packet
+            // weight is discarded.
+            unsigned int adaptive_branch_limit =
+                static_cast<unsigned int>(candidate_branches.size());
+            if (options_.minimum_split_weight > 0.0)
+                adaptive_branch_limit = std::max(
+                    1u,
+                    static_cast<unsigned int>(
+                        std::floor(packet_weight /
+                                   options_.minimum_split_weight)));
+            adaptive_branch_limit = std::min(
+                adaptive_branch_limit,
+                static_cast<unsigned int>(candidate_branches.size()));
+
+            for (unsigned int b = 0; b < candidate_branches.size(); ++b)
+            {
+                const double fraction = candidate_branches[b].fraction;
+                if (b >= adaptive_branch_limit)
+                {
+                    result.redistributed_fraction += fraction;
+                    continue;
+                }
+                result.retained_fraction += fraction;
+                result.branches.push_back(candidate_branches[b]);
+            }
+
+            if (options_.minimum_packet_weight > 0.0)
+            {
+                bool split_creates_small_packet = false;
+                for (unsigned int b = 0; b < result.branches.size(); ++b)
+                {
+                    const double normalized_fraction =
+                        result.retained_fraction > 0.0
+                        ? result.branches[b].fraction / result.retained_fraction
+                        : 0.0;
+                    if (packet_weight * normalized_fraction <
+                        options_.minimum_packet_weight)
+                        split_creates_small_packet = true;
+                }
+
+                if (split_creates_small_packet && !result.branches.empty())
+                {
+                    AtlasQueryBranch<dim> keep = result.branches.front();
+                    result.redistributed_fraction = std::max(1.0 - keep.fraction, 0.0);
+                    result.retained_fraction = keep.fraction;
+                    result.branches.clear();
+                    result.branches.push_back(keep);
+                }
+            }
+
+            if (result.branches.empty() && !candidate_branches.empty())
+            {
+                typename std::vector<AtlasQueryBranch<dim> >::iterator keep =
+                    std::max_element(
+                        candidate_branches.begin(), candidate_branches.end(),
+                        [](const AtlasQueryBranch<dim> &a,
+                           const AtlasQueryBranch<dim> &b) {
+                            return a.fraction < b.fraction;
+                        });
+                result.redistributed_fraction = std::max(1.0 - keep->fraction, 0.0);
+                result.retained_fraction = keep->fraction;
+                result.branches.push_back(*keep);
+            }
+
+            // Retained branches are normalized so packet splitting remains
+            // conservative after low-significance probability is redistributed.
             if (result.retained_fraction > 0.0)
                 for (unsigned int b = 0; b < result.branches.size(); ++b)
                     result.branches[b].fraction /= result.retained_fraction;
@@ -849,6 +999,97 @@ class CellTrajectoryAtlas
             return transfers_;
         }
 
+        /**
+         * Write one whitespace-delimited row per stored trajectory sample.
+         *
+         * Positions are the physical coordinates used during atlas construction,
+         * not reference/unit-cell coordinates.  The first line is a plain header
+         * so the file can be loaded directly with pandas.read_csv(..., sep=r"\s+").
+         */
+        void write_trajectories_table(std::ostream &out) const
+        {
+            AssertThrow(state_ == AtlasBuildState::finalized,
+                        dealii::ExcMessage("Trajectory atlas must be finalized before writing debug output."));
+
+            out << "cell_id flow_step tracking_direction trajectory_index "
+                << "trajectory_id sample_id sample_count trajectory_count "
+                << "downstream_kind downstream_id downstream_face downstream_slot "
+                << "upstream_kind upstream_id upstream_face upstream_slot "
+                << "represented_flow total_backward_time total_aquifer_length "
+                << "backward_time aquifer_length x y z\n";
+
+            const std::streamsize old_precision = out.precision();
+            const std::ios::fmtflags old_flags = out.flags();
+            out << std::setprecision(17);
+
+            for (unsigned int t = 0; t < trajectories_.size(); ++t)
+            {
+                const AtlasTrajectory<dim> &trajectory = trajectories_[t];
+                const int downstream_face =
+                    trajectory.downstream_origin.kind == AtlasOriginKind::subface
+                    ? static_cast<int>(atlas_face_from_subface_id(
+                          trajectory.downstream_origin.id))
+                    : -1;
+                const int downstream_slot =
+                    trajectory.downstream_origin.kind == AtlasOriginKind::subface
+                    ? static_cast<int>(atlas_slot_from_subface_id(
+                          trajectory.downstream_origin.id))
+                    : -1;
+                const int upstream_face =
+                    trajectory.upstream_terminal.kind == AtlasTerminalKind::subface
+                    ? static_cast<int>(atlas_face_from_subface_id(
+                          trajectory.upstream_terminal.id))
+                    : -1;
+                const int upstream_slot =
+                    trajectory.upstream_terminal.kind == AtlasTerminalKind::subface
+                    ? static_cast<int>(atlas_slot_from_subface_id(
+                          trajectory.upstream_terminal.id))
+                    : -1;
+
+                for (unsigned int s = 0; s < trajectory.samples.size(); ++s)
+                {
+                    const AtlasTrajectorySample<dim> &sample = trajectory.samples[s];
+                    out << cell_id_ << ' '
+                        << flow_step_ << ' '
+                        << tracking_direction_ << ' '
+                        << t << ' '
+                        << trajectory.id << ' '
+                        << s << ' '
+                        << trajectory.samples.size() << ' '
+                        << trajectories_.size() << ' '
+                        << atlas_origin_kind_name(trajectory.downstream_origin.kind) << ' '
+                        << trajectory.downstream_origin.id << ' '
+                        << downstream_face << ' '
+                        << downstream_slot << ' '
+                        << atlas_terminal_kind_name(trajectory.upstream_terminal.kind) << ' '
+                        << trajectory.upstream_terminal.id << ' '
+                        << upstream_face << ' '
+                        << upstream_slot << ' '
+                        << trajectory.represented_flow << ' '
+                        << trajectory.total_time() << ' '
+                        << trajectory.total_length() << ' '
+                        << sample.backward_time << ' '
+                        << sample.aquifer_length;
+                    for (unsigned int d = 0; d < dim; ++d)
+                        out << ' ' << sample.position[d];
+                    out << '\n';
+                }
+            }
+
+            out.precision(old_precision);
+            out.flags(old_flags);
+        }
+
+        void write_trajectories_table_to_txt(const std::string &filename_base) const
+        {
+            const std::string filename = filename_base + "_atlas_trajectories.txt";
+            std::ofstream out(filename.c_str(), std::ios::trunc);
+            AssertThrow(out.good(),
+                        dealii::ExcMessage("Could not open trajectory atlas debug file: " + filename));
+            write_trajectories_table(out);
+            out.flush();
+        }
+
     private:
         void require_collecting() const
         {
@@ -869,6 +1110,88 @@ class CellTrajectoryAtlas
                 value += dx * dx;
             }
             return value;
+        }
+
+        AtlasTrajectorySample<dim> closest_sample_on_trajectory(
+            const AtlasTrajectory<dim> &trajectory,
+            const dealii::Point<dim> &position,
+            double &distance2) const
+        {
+            AssertThrow(!trajectory.samples.empty(),
+                        dealii::ExcMessage("Cannot project onto an empty atlas trajectory."));
+
+            distance2 = std::numeric_limits<double>::max();
+            AtlasTrajectorySample<dim> closest = trajectory.samples.front();
+            if (trajectory.samples.size() == 1)
+            {
+                distance2 = metric_distance_squared(position, closest.position);
+                return closest;
+            }
+
+            for (unsigned int i = 1; i < trajectory.samples.size(); ++i)
+            {
+                const AtlasTrajectorySample<dim> &a = trajectory.samples[i - 1];
+                const AtlasTrajectorySample<dim> &b = trajectory.samples[i];
+                double numerator = 0.0;
+                double denominator = 0.0;
+                for (unsigned int d = 0; d < dim; ++d)
+                {
+                    const double scale = options_.metric_scale[d];
+                    AssertThrow(std::isfinite(scale) && scale > 0.0,
+                                dealii::ExcMessage("Atlas metric scales must be finite and positive."));
+                    const double segment = (b.position[d] - a.position[d]) / scale;
+                    numerator += ((position[d] - a.position[d]) / scale) * segment;
+                    denominator += segment * segment;
+                }
+
+                double alpha = denominator > 0.0 ? numerator / denominator : 0.0;
+                alpha = std::max(0.0, std::min(1.0, alpha));
+
+                AtlasTrajectorySample<dim> projected;
+                projected.backward_time = a.backward_time +
+                    alpha * (b.backward_time - a.backward_time);
+                projected.aquifer_length = a.aquifer_length +
+                    alpha * (b.aquifer_length - a.aquifer_length);
+                for (unsigned int d = 0; d < dim; ++d)
+                    projected.position[d] = a.position[d] +
+                        alpha * (b.position[d] - a.position[d]);
+
+                const double candidate_distance2 =
+                    metric_distance_squared(position, projected.position);
+                if (candidate_distance2 < distance2)
+                {
+                    distance2 = candidate_distance2;
+                    closest = projected;
+                }
+            }
+            return closest;
+        }
+
+        dealii::Point<2> terminal_face_local_coordinates(
+            const AtlasTerminal &terminal,
+            const dealii::Point<dim> &position) const
+        {
+            dealii::Point<2> local;
+            if (terminal.kind != AtlasTerminalKind::subface)
+                return local;
+
+            const unsigned int face = atlas_face_from_subface_id(terminal.id);
+            if (face == 0 || face == 1)
+            {
+                local[0] = position[1];
+                local[1] = position[2];
+            }
+            else if (face == 2 || face == 3)
+            {
+                local[0] = position[0];
+                local[1] = position[2];
+            }
+            else
+            {
+                local[0] = position[0];
+                local[1] = position[1];
+            }
+            return local;
         }
 
         static double sample_control_time(const AtlasTrajectory<dim> &trajectory,

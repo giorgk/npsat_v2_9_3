@@ -271,8 +271,9 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             bool is_stuck = false;
             const Tensor<1,dim> dir = u / vmag;
             const double directional_cell_width = cached_cell.directional_bbox_width(dir);
-            // find the step size
-            npsat_trace::TimeStepControl tsc; //TODO make this user parameter
+            // User-configured point-tracing substep limits.
+            const npsat_trace::TimeStepControl &tsc =
+                topt.point_opt.time_step_control;
             const double ds = npsat_trace::compute_step_size_ds<dim>(directional_cell_width,
                                                         vmag, dt_remaining, time_step_size, tsc,is_stuck);
 
@@ -576,4 +577,3 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
 }
 
 #endif // NPSAT_V2_TRACE_POINT_IMPL_H
-

@@ -98,6 +98,12 @@ namespace npsat_trace {
         ("IDW.ProximityTolerance", po::value<double>()->default_value(0.01), "Use a sample directly when the anisotropic distance is below this tolerance")
         ("IDW.AnisotropyRatio", po::value<double>()->default_value(0.0), "Vertical distance multiplier; zero estimates it from cell geometry")
 
+        //[Point]
+        ("Point.MaxStep", po::value<double>()->default_value(100000.0), "Maximum point-tracing distance advanced in one substep")
+        ("Point.StepsPerCell", po::value<unsigned int>()->default_value(5), "Minimum number of point-tracing substeps across one directional cell width")
+        ("Point.MaxStepTime", po::value<double>()->default_value(100.0), "Maximum point-tracing time advanced in one substep")
+        ("Point.StepsPerTime", po::value<unsigned int>()->default_value(3), "Minimum number of point-tracing substeps per transient time step")
+
         //[Trajectory atlas]
         ("Atlas.QuadraturePointsPerDirection", po::value<unsigned int>()->default_value(2), "Tensor-product quadrature points per subface direction")
         ("Atlas.StoredSamplesPerTrajectory", po::value<unsigned int>()->default_value(8), "Number of time-ordered samples retained on each local atlas trajectory")
@@ -106,7 +112,8 @@ namespace npsat_trace {
         ("Atlas.MaximumBranchesPerPacket", po::value<unsigned int>()->default_value(16), "Maximum branches retained after one atlas query")
         ("Atlas.KernelPower", po::value<double>()->default_value(2.0), "Inverse-distance kernel power for interior atlas queries")
         ("Atlas.KernelEpsilon", po::value<double>()->default_value(1.0e-6), "Dimensionless regularization for atlas distance weights")
-        ("Atlas.MinimumBranchFraction", po::value<double>()->default_value(1.0e-6), "Discard and renormalize atlas branches below this fraction")
+        ("Atlas.MinimumPacketWeight", po::value<double>()->default_value(0.01), "Stop propagating atlas packets below this flow amount")
+        ("Atlas.MinimumSplitWeight", po::value<double>()->default_value(0.01), "Approximate minimum packet flow amount needed per retained atlas split branch")
         ("Atlas.FlowTolerance", po::value<double>()->default_value(1.0e-12), "Absolute flow tolerance used to classify atlas origins and terminals")
         ("Atlas.BalanceRelativeTolerance", po::value<double>()->default_value(1.0e-5), "Relative cell/trajectory flow-balance diagnostic tolerance")
 
@@ -205,7 +212,8 @@ namespace npsat_trace {
                     tr_opt.atlas_opt.maximum_branches_per_packet = vm_cfg["Atlas.MaximumBranchesPerPacket"].as<unsigned int>();
                     tr_opt.atlas_opt.kernel_power = vm_cfg["Atlas.KernelPower"].as<double>();
                     tr_opt.atlas_opt.kernel_epsilon = vm_cfg["Atlas.KernelEpsilon"].as<double>();
-                    tr_opt.atlas_opt.minimum_branch_fraction = vm_cfg["Atlas.MinimumBranchFraction"].as<double>();
+                    tr_opt.atlas_opt.minimum_packet_weight = vm_cfg["Atlas.MinimumPacketWeight"].as<double>();
+                    tr_opt.atlas_opt.minimum_split_weight = vm_cfg["Atlas.MinimumSplitWeight"].as<double>();
                     tr_opt.atlas_opt.flow_tolerance = vm_cfg["Atlas.FlowTolerance"].as<double>();
                     tr_opt.atlas_opt.balance_relative_tolerance = vm_cfg["Atlas.BalanceRelativeTolerance"].as<double>();
                     if (tr_opt.atlas_opt.quadrature_points_per_direction == 0 ||
@@ -216,7 +224,8 @@ namespace npsat_trace {
                         throw std::runtime_error("Atlas integer controls must be positive and StoredSamplesPerTrajectory must be at least two.");
                     if (!(tr_opt.atlas_opt.kernel_power > 0.0) ||
                         !(tr_opt.atlas_opt.kernel_epsilon > 0.0) ||
-                        tr_opt.atlas_opt.minimum_branch_fraction < 0.0 ||
+                        tr_opt.atlas_opt.minimum_packet_weight < 0.0 ||
+                        tr_opt.atlas_opt.minimum_split_weight < 0.0 ||
                         !(tr_opt.atlas_opt.flow_tolerance > 0.0) ||
                         !(tr_opt.atlas_opt.balance_relative_tolerance > 0.0))
                         throw std::runtime_error("Invalid trajectory-atlas floating-point option.");
@@ -232,6 +241,22 @@ namespace npsat_trace {
                         throw std::runtime_error("IDW.ProximityTolerance must be greater than zero.");
                     if (tr_opt.idw_opt.anisotropy_ratio < 0.0)
                         throw std::runtime_error("IDW.AnisotropyRatio must be zero (automatic) or greater than zero.");
+                }
+
+                {// Point
+                    tr_opt.point_opt.time_step_control.max_step =
+                        vm_cfg["Point.MaxStep"].as<double>();
+                    tr_opt.point_opt.time_step_control.n_steps_per_cell =
+                        vm_cfg["Point.StepsPerCell"].as<unsigned int>();
+                    tr_opt.point_opt.time_step_control.max_step_time =
+                        vm_cfg["Point.MaxStepTime"].as<double>();
+                    tr_opt.point_opt.time_step_control.n_steps_per_time =
+                        vm_cfg["Point.StepsPerTime"].as<unsigned int>();
+                    if (!(tr_opt.point_opt.time_step_control.max_step > 0.0) ||
+                        tr_opt.point_opt.time_step_control.n_steps_per_cell == 0 ||
+                        !(tr_opt.point_opt.time_step_control.max_step_time > 0.0) ||
+                        tr_opt.point_opt.time_step_control.n_steps_per_time == 0)
+                        throw std::runtime_error("Point time-step controls must be positive.");
                 }
 
                 {// Misc

@@ -7,6 +7,7 @@
 
 
 namespace npsat_trace {
+    using namespace dealii;
 
     enum class TransportMethod : unsigned char {
         point,
@@ -33,6 +34,18 @@ namespace npsat_trace {
         double anisotropy_ratio = 0.0;
     };
 
+    struct TimeStepControl
+    {
+        double max_step = 100000;
+        unsigned int n_steps_per_cell = 5;
+        double max_step_time = 100;
+        unsigned int n_steps_per_time = 3;
+    };
+
+    struct Point_opt {
+        TimeStepControl time_step_control;
+    };
+
     struct Atlas_opt {
         unsigned int quadrature_points_per_direction = 2;
         unsigned int stored_samples_per_trajectory = 8;
@@ -41,7 +54,8 @@ namespace npsat_trace {
         unsigned int maximum_branches_per_packet = 16;
         double kernel_power = 2.0;
         double kernel_epsilon = 1.0e-6;
-        double minimum_branch_fraction = 1.0e-6;
+        double minimum_packet_weight = 0.01;
+        double minimum_split_weight = 0.01;
         double flow_tolerance = 1.0e-12;
         double balance_relative_tolerance = 1.0e-5;
     };
@@ -90,6 +104,7 @@ namespace npsat_trace {
         std::string delta_time_file;
         Sim_opt sim_opt;
         IDW_opt idw_opt;
+        Point_opt point_opt;
         Atlas_opt atlas_opt;
         Misc_opt misc_opt;
         int n_paticles_parallel = 20000;
@@ -213,14 +228,6 @@ namespace npsat_trace {
         double Qe        = 0.0;
         double Qwbf_bot  = 0.0;
         double Qwbf_top  = 0.0;
-    };
-
-    struct TimeStepControl
-    {
-        double max_step = 100000;
-        unsigned int n_steps_per_cell = 5;
-        double max_step_time = 100;
-        unsigned int n_steps_per_time = 3;
     };
 
     struct ExitResult {

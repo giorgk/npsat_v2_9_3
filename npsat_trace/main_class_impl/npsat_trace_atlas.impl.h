@@ -119,7 +119,7 @@ NPSAT_TRACE<dim>::get_or_build_cell_atlas(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache,
     const unsigned int flow_step,
-    std::ofstream &debug_output)
+    std::ofstream &atlas_debug_output)
 {
     AssertThrow(cell->is_locally_owned(),
                 ExcMessage("Only a locally owned cell may build an atlas."));
@@ -128,7 +128,7 @@ NPSAT_TRACE<dim>::get_or_build_cell_atlas(
     if (!all_cell_atlas_valid[slot] || all_cell_atlas_flow_step[slot] != flow_step)
     {
         build_cell_atlas(cell, velocity_cache, flow_step,
-                         all_cell_atlases[slot], debug_output);
+                         all_cell_atlases[slot], atlas_debug_output);
         all_cell_atlas_valid[slot] = true;
         all_cell_atlas_flow_step[slot] = flow_step;
     }
@@ -141,7 +141,7 @@ void NPSAT_TRACE<dim>::build_cell_atlas(
     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache,
     const unsigned int flow_step,
     npsat_trace::CellTrajectoryAtlas<dim> &atlas,
-    std::ofstream &debug_output)
+    std::ofstream &atlas_debug_output)
 {
     static_assert(dim == 3, "Trajectory atlas construction assumes dim == 3.");
     const npsat_trace::Atlas_opt &input = topt.atlas_opt;
@@ -154,7 +154,8 @@ void NPSAT_TRACE<dim>::build_cell_atlas(
     options.kernel_epsilon = input.kernel_epsilon;
     options.flow_tolerance = input.flow_tolerance;
     options.balance_relative_tolerance = input.balance_relative_tolerance;
-    options.minimum_branch_fraction = input.minimum_branch_fraction;
+    options.minimum_packet_weight = input.minimum_packet_weight;
+    options.minimum_split_weight = input.minimum_split_weight;
     const std::array<double,4> &xv = velocity_cache.get_xv();
     const std::array<double,4> &yv = velocity_cache.get_yv();
     const std::array<double,4> &zb = velocity_cache.get_zb();
@@ -438,15 +439,28 @@ void NPSAT_TRACE<dim>::build_cell_atlas(
     }
 
     atlas.finalize();
-    if (debug_output.good())
-        debug_output << "ATLAS " << cell->id().to_string()
-                     << " step " << flow_step
-                     << " trajectories " << atlas.trajectories().size()
-                     << " Qin " << atlas.total_forward_inflow()
-                     << " Qout " << atlas.total_forward_outflow()
-                     << " residual " << atlas.mass_balance_error()
-                     << " max_origin_relative_error "
-                     << atlas.maximum_origin_relative_error() << '\n';
+    if (topt.misc_opt.init_cell_dbg)
+    {
+        const std::string rank_str = Utilities::int_to_string(my_rank, 4);
+        const std::string fn_base = topt.misc_opt.dbg_prefix +
+            "_rank_" + rank_str +
+            "_init_cell_" + cell->id().to_string();
+        const std::string fn = fn_base + "_atlas_trajectories.txt";
+        std::cout << "Writing atlas trajectories to " << fn << std::endl;
+        atlas.write_trajectories_table_to_txt(fn_base);
+    }
+    if (atlas_debug_output.good())
+    {
+        atlas_debug_output << "ATLAS " << cell->id().to_string()
+                           << " step " << flow_step
+                           << " trajectories " << atlas.trajectories().size()
+                           << " Qin " << atlas.total_forward_inflow()
+                           << " Qout " << atlas.total_forward_outflow()
+                           << " residual " << atlas.mass_balance_error()
+                           << " max_origin_relative_error "
+                           << atlas.maximum_origin_relative_error() << '\n';
+        atlas_debug_output.flush();
+    }
 }
 
 template <int dim>
@@ -508,6 +522,24 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
         std::ofstream output((topt.output_prefix + "_atlas_rank_" + rank_string +
                               "_iter_" + iteration_string + ".dat").c_str());
         output << "# Eid Sid branch parent weight age length x y z terminal_kind terminal_id\n";
+        std::ofstream dbg_cell_list;
+        std::ofstream atlas_debug_output;
+        if (topt.misc_opt.init_cell_dbg)
+        {
+            const std::string f_dbg_cell_list_name =
+                topt.misc_opt.dbg_prefix + "_atlas_cell_list_rank_" +
+                rank_string + "_iter_" + iteration_string + ".dat";
+            dbg_cell_list.open(f_dbg_cell_list_name.c_str(), std::ios::trunc);
+            const std::string f_atlas_debug_name =
+                topt.misc_opt.dbg_prefix + "_atlas_debug_rank_" +
+                rank_string + "_iter_" + iteration_string + ".dat";
+            atlas_debug_output.open(f_atlas_debug_name.c_str(), std::ios::trunc);
+        }
+        const bool atlas_packet_dbg = topt.misc_opt.init_cell_dbg;
+        const bool atlas_verbose_packet_dbg = false;
+        if (atlas_packet_dbg)
+            std::cout << "ATLAS_PACKET_DBG_COLUMNS Eid Sid x y z age length"
+                      << std::endl;
 
         unsigned int flow_step = static_cast<unsigned int>(delta_times.size() - 1);
         unsigned long long time_pass = 0;
@@ -525,14 +557,96 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
             unsigned int exchange_epoch = 0;
             while (true)
             {
-                std::vector<std::vector<npsat_trace::AtlasPacket<dim> > > send(n_proc);
-                std::vector<npsat_trace::AtlasPacket<dim> > local_queue;
-                local_queue.swap(active);
-
-                while (!local_queue.empty())
+                struct LocalQueueEntry
                 {
-                    npsat_trace::AtlasPacket<dim> parent = local_queue.back();
-                    local_queue.pop_back();
+                    npsat_trace::AtlasPacket<dim> packet;
+                    bool has_cell = false;
+                    typename DoFHandler<dim>::active_cell_iterator cell;
+                    std::uint64_t sequence = 0;
+                };
+
+                struct LocalQueueEntryWeightLess
+                {
+                    bool operator()(const LocalQueueEntry &a,
+                                    const LocalQueueEntry &b) const
+                    {
+                        if (a.packet.weight != b.packet.weight)
+                            return a.packet.weight < b.packet.weight;
+                        return a.sequence > b.sequence;
+                    }
+                };
+
+                std::vector<std::vector<npsat_trace::AtlasPacket<dim> > > send(n_proc);
+                typedef std::pair<std::uint64_t, std::uint64_t> ParticleQueueKey;
+                typedef std::priority_queue<LocalQueueEntry,
+                    std::vector<LocalQueueEntry>,
+                    LocalQueueEntryWeightLess> ParticleLocalQueue;
+                std::map<ParticleQueueKey, ParticleLocalQueue> local_queues;
+                unsigned int queued_entries = 0;
+                std::uint64_t local_queue_sequence = 0;
+                const auto push_local_entry = [&](LocalQueueEntry entry) {
+                    entry.sequence = local_queue_sequence++;
+                    const ParticleQueueKey key(entry.packet.receptor_id,
+                                               entry.packet.seed_id);
+                    local_queues[key].push(entry);
+                    ++queued_entries;
+                };
+                for (unsigned int p = 0; p < active.size(); ++p)
+                {
+                    AssertThrow(topt.atlas_opt.minimum_packet_weight <= 0.0 ||
+                                active[p].weight >= topt.atlas_opt.minimum_packet_weight,
+                                ExcMessage("Atlas packet below MinimumPacketWeight reached the local queue."));
+                    LocalQueueEntry entry;
+                    entry.packet = active[p];
+                    push_local_entry(entry);
+                }
+                active.clear();
+
+                while (queued_entries > 0)
+                {
+                    typename std::map<ParticleQueueKey,
+                        ParticleLocalQueue>::iterator queue_it =
+                        local_queues.begin();
+                    while (queue_it != local_queues.end() &&
+                           queue_it->second.empty())
+                        ++queue_it;
+                    AssertThrow(queue_it != local_queues.end(),
+                                ExcMessage("Atlas local queue bookkeeping is inconsistent."));
+                    std::vector<LocalQueueEntry> selected_particle_queue_debug;
+                    {
+                        ParticleLocalQueue queue_copy = queue_it->second;
+                        selected_particle_queue_debug.reserve(queue_copy.size());
+                        while (!queue_copy.empty())
+                        {
+                            selected_particle_queue_debug.push_back(
+                                queue_copy.top());
+                            queue_copy.pop();
+                        }
+                    }
+                    LocalQueueEntry parent_entry = queue_it->second.top();
+                    queue_it->second.pop();
+                    --queued_entries;
+                    if (queue_it->second.empty())
+                        local_queues.erase(queue_it);
+                    npsat_trace::AtlasPacket<dim> parent = parent_entry.packet;
+                    AssertThrow(topt.atlas_opt.minimum_packet_weight <= 0.0 ||
+                                parent.weight >= topt.atlas_opt.minimum_packet_weight,
+                                ExcMessage("Atlas selected a packet below MinimumPacketWeight."));
+                    if (atlas_verbose_packet_dbg)
+                        std::cout << std::setprecision(17)
+                                  << "ATLAS_PACKET_DBG rank " << my_rank
+                                  << " event pop_weight_queue"
+                                  << " Eid " << parent.receptor_id
+                                  << " Sid " << parent.seed_id
+                                  << " branch " << parent.branch_id
+                                  << " parent_branch "
+                                  << parent.parent_branch_id
+                                  << " weight " << parent.weight
+                                  << " selected_particle_queue_size "
+                                  << selected_particle_queue_debug.size()
+                                  << " queued_entries_remaining "
+                                  << queued_entries
+                                  << std::endl;
                     if (parent.dt_remaining <= topt.sim_opt.dt_eps)
                     {
                         parent.state = npsat_trace::AtlasPacketState::step_complete;
@@ -548,6 +662,7 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                                << parent.aquifer_length << ' '
                                << parent.position[0] << ' ' << parent.position[1] << ' '
                                << parent.position[2] << " 3 0\n";
+                        output.flush();
                         continue;
                     }
                     if (parent.generation >= static_cast<unsigned int>(
@@ -559,40 +674,144 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                                << parent.aquifer_length << ' '
                                << parent.position[0] << ' ' << parent.position[1] << ' '
                                << parent.position[2] << " 3 0\n";
+                        output.flush();
                         continue;
                     }
 
                     typename DoFHandler<dim>::active_cell_iterator cell;
-                    if (!find_owned_cell_for_atlas_packet(parent.position, cell))
+                    if (parent_entry.has_cell)
+                    {
+                        cell = parent_entry.cell;
+                        AssertThrow(cell->is_active(),
+                                    ExcMessage("Atlas local queue target cell is not active."));
+                        AssertThrow(cell->is_locally_owned(),
+                                    ExcMessage("Atlas local queue target cell is not locally owned."));
+                        if (atlas_verbose_packet_dbg)
+                            std::cout << std::setprecision(17)
+                                      << "ATLAS_PACKET_DBG rank " << my_rank
+                                      << " event use_queued_cell"
+                                      << " Eid " << parent.receptor_id
+                                      << " Sid " << parent.seed_id
+                                      << " branch " << parent.branch_id
+                                      << " flow_step " << flow_step
+                                      << " cell " << cell->id().to_string()
+                                      << " point_inside_cell "
+                                      << cell->point_inside(parent.position)
+                                      << " x " << parent.position[0]
+                                      << " y " << parent.position[1]
+                                      << " z " << parent.position[2]
+                                      << std::endl;
+                        AssertThrow(cell->point_inside(parent.position),
+                                    ExcMessage("Atlas queued local packet is not inside its target neighbor cell."));
+                    }
+                    else if (!find_owned_cell_for_atlas_packet(parent.position, cell))
                     {
                         const unsigned int owner = atlas_owner_for_position(parent.position);
+                        if (atlas_packet_dbg)
+                            std::cout << std::setprecision(17)
+                                      << "ATLAS_PACKET_WARN rank " << my_rank
+                                      << " event no_owned_cell"
+                                      << " Eid " << parent.receptor_id
+                                      << " Sid " << parent.seed_id
+                                      << " branch " << parent.branch_id
+                                      << " parent_branch " << parent.parent_branch_id
+                                      << " generation " << parent.generation
+                                      << " flow_step " << flow_step
+                                      << " age " << parent.age
+                                      << " length " << parent.aquifer_length
+                                      << " dt_remaining " << parent.dt_remaining
+                                      << " weight " << parent.weight
+                                      << " x " << parent.position[0]
+                                      << " y " << parent.position[1]
+                                      << " z " << parent.position[2]
+                                      << " owner_guess " << owner
+                                      << std::endl;
                         if (owner < n_proc && owner != my_rank)
                             send[owner].push_back(parent);
                         else
+                        {
                             output << parent.receptor_id << ' ' << parent.seed_id << ' '
                                    << parent.branch_id << ' ' << parent.parent_branch_id << ' '
                                    << parent.weight << ' ' << parent.age << ' '
                                    << parent.aquifer_length << ' '
                                    << parent.position[0] << ' ' << parent.position[1] << ' '
                                    << parent.position[2] << " 3 0\n";
+                            output.flush();
+                        }
                         continue;
                     }
 
-                    std::ofstream no_debug;
                     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache =
-                        get_or_build_cell_cache(cell, no_debug);
+                        get_or_build_cell_cache(cell, dbg_cell_list);
                     npsat_trace::CellTrajectoryAtlas<dim> &atlas =
-                        get_or_build_cell_atlas(cell, velocity_cache, flow_step, no_debug);
+                        get_or_build_cell_atlas(cell, velocity_cache, flow_step, atlas_debug_output);
+                    if (atlas_verbose_packet_dbg)
+                        std::cout << std::setprecision(17)
+                                  << "ATLAS_PACKET_DBG rank " << my_rank
+                                  << " event before_query"
+                                  << " Eid " << parent.receptor_id
+                                  << " Sid " << parent.seed_id
+                                  << " branch " << parent.branch_id
+                                  << " parent_branch " << parent.parent_branch_id
+                                  << " generation " << parent.generation
+                                  << " flow_step " << flow_step
+                                  << " cell " << cell->id().to_string()
+                                  << " active_cell_index " << cell->active_cell_index()
+                                  << " user_index " << cell->user_index()
+                                  << " age " << parent.age
+                                  << " length " << parent.aquifer_length
+                                  << " dt_remaining " << parent.dt_remaining
+                                  << " weight " << parent.weight
+                                  << " x " << parent.position[0]
+                                  << " y " << parent.position[1]
+                                  << " z " << parent.position[2]
+                                  << " atlas_trajectories " << atlas.trajectories().size()
+                                  << " atlas_Qin " << atlas.total_forward_inflow()
+                                  << " atlas_Qout " << atlas.total_forward_outflow()
+                                  << std::endl;
                     npsat_trace::AtlasQueryResult<dim> query =
-                        atlas.query(parent.position, parent.dt_remaining);
+                        atlas.query(parent.position, parent.dt_remaining,
+                                    parent.weight);
+                    if (atlas_verbose_packet_dbg)
+                        std::cout << std::setprecision(17)
+                                  << "ATLAS_PACKET_DBG rank " << my_rank
+                                  << " event after_query"
+                                  << " Eid " << parent.receptor_id
+                                  << " Sid " << parent.seed_id
+                                  << " branch " << parent.branch_id
+                                  << " flow_step " << flow_step
+                                  << " cell " << cell->id().to_string()
+                                  << " query_valid " << query.valid
+                                  << " branches " << query.branches.size()
+                                  << " retained_fraction " << query.retained_fraction
+                                  << " redistributed_fraction "
+                                  << query.redistributed_fraction
+                                  << std::endl;
                     if (!query.valid)
                     {
+                        if (atlas_packet_dbg)
+                            std::cout << std::setprecision(17)
+                                      << "ATLAS_PACKET_WARN rank " << my_rank
+                                      << " event query_invalid_terminate"
+                                      << " Eid " << parent.receptor_id
+                                      << " Sid " << parent.seed_id
+                                      << " branch " << parent.branch_id
+                                      << " flow_step " << flow_step
+                                      << " cell " << cell->id().to_string()
+                                      << " age " << parent.age
+                                      << " length " << parent.aquifer_length
+                                      << " dt_remaining " << parent.dt_remaining
+                                      << " x " << parent.position[0]
+                                      << " y " << parent.position[1]
+                                      << " z " << parent.position[2]
+                                      << std::endl;
                         output << parent.receptor_id << ' ' << parent.seed_id << ' '
                                << parent.branch_id << ' ' << parent.parent_branch_id << ' '
                                << parent.weight << ' ' << parent.age << ' '
                                << parent.aquifer_length << ' '
                                << parent.position[0] << ' ' << parent.position[1] << ' '
                                << parent.position[2] << " 3 0\n";
+                        output.flush();
                         continue;
                     }
 
@@ -627,11 +846,74 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                             parent.dt_remaining - branch.advanced_time, 0.0);
                         child.position = branch.advanced_position;
                         child_weight += child.weight;
+                        const double displacement = parent.position.distance(child.position);
+
+                        if (atlas_packet_dbg && branch.reaches_terminal)
+                            std::cout << std::setprecision(17)
+                                      << "ATLAS_PACKET_DBG "
+                                      << child.receptor_id << ' '
+                                      << child.seed_id << ' '
+                                      << child.position[0] << ' '
+                                      << child.position[1] << ' '
+                                      << child.position[2] << ' '
+                                      << child.age << ' '
+                                      << child.aquifer_length
+                                      << std::endl;
+                        if (atlas_verbose_packet_dbg)
+                            std::cout << std::setprecision(17)
+                                      << "ATLAS_PACKET_DBG_VERBOSE rank " << my_rank
+                                      << " event child_from_query"
+                                      << " Eid " << child.receptor_id
+                                      << " Sid " << child.seed_id
+                                      << " parent_branch " << parent.branch_id
+                                      << " child_branch " << child.branch_id
+                                      << " branch_index " << b
+                                      << " generation " << child.generation
+                                      << " flow_step " << flow_step
+                                      << " cell " << cell->id().to_string()
+                                      << " terminal_kind "
+                                      << static_cast<unsigned int>(branch.terminal.kind)
+                                      << " terminal_id " << branch.terminal.id
+                                      << " fraction " << branch.fraction
+                                      << " parent_age " << parent.age
+                                      << " child_age " << child.age
+                                      << " advanced_time " << branch.advanced_time
+                                      << " remaining_time " << branch.remaining_time
+                                      << " parent_length " << parent.aquifer_length
+                                      << " child_length " << child.aquifer_length
+                                      << " advanced_length " << branch.advanced_length
+                                      << " remaining_length " << branch.remaining_length
+                                      << " parent_dt_remaining " << parent.dt_remaining
+                                      << " child_dt_remaining " << child.dt_remaining
+                                      << " reaches_terminal " << branch.reaches_terminal
+                                      << " parent_x " << parent.position[0]
+                                      << " parent_y " << parent.position[1]
+                                      << " parent_z " << parent.position[2]
+                                      << " child_x " << child.position[0]
+                                      << " child_y " << child.position[1]
+                                      << " child_z " << child.position[2]
+                                      << " displacement " << displacement
+                                      << std::endl;
 
                         if (!branch.reaches_terminal)
                         {
                             child.dt_remaining = 0.0;
                             child.state = npsat_trace::AtlasPacketState::step_complete;
+                            if (atlas_verbose_packet_dbg)
+                                std::cout << std::setprecision(17)
+                                          << "ATLAS_PACKET_DBG rank " << my_rank
+                                          << " event step_complete_inside_cell"
+                                          << " Eid " << child.receptor_id
+                                          << " Sid " << child.seed_id
+                                          << " child_branch " << child.branch_id
+                                          << " flow_step " << flow_step
+                                          << " cell " << cell->id().to_string()
+                                          << " x " << child.position[0]
+                                          << " y " << child.position[1]
+                                          << " z " << child.position[2]
+                                          << " age " << child.age
+                                          << " length " << child.aquifer_length
+                                          << std::endl;
                             completed.push_back(child);
                             continue;
                         }
@@ -642,6 +924,22 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                                 npsat_trace::atlas_face_from_subface_id(branch.terminal.id);
                             const unsigned int subface =
                                 npsat_trace::atlas_slot_from_subface_id(branch.terminal.id);
+                            if (atlas_verbose_packet_dbg)
+                                std::cout << std::setprecision(17)
+                                          << "ATLAS_PACKET_DBG rank " << my_rank
+                                          << " event terminal_subface"
+                                          << " Eid " << child.receptor_id
+                                          << " Sid " << child.seed_id
+                                          << " child_branch " << child.branch_id
+                                          << " flow_step " << flow_step
+                                          << " cell " << cell->id().to_string()
+                                          << " face " << face
+                                          << " subface " << subface
+                                          << " at_boundary " << cell->at_boundary(face)
+                                          << " x " << child.position[0]
+                                          << " y " << child.position[1]
+                                          << " z " << child.position[2]
+                                          << std::endl;
                             if (cell->at_boundary(face))
                             {
                                 output << child.receptor_id << ' ' << child.seed_id << ' '
@@ -650,28 +948,244 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                                        << child.aquifer_length << ' '
                                        << child.position[0] << ' ' << child.position[1] << ' '
                                        << child.position[2] << " 0 " << branch.terminal.id << '\n';
+                                output.flush();
                                 continue;
                             }
 
+                            const Point<dim> before_nudge = child.position;
+                            const double nudge_factors[] = {
+                                1.0e-8, 1.0e-7, 1.0e-6, 1.0e-5, 1.0e-4, 1.0e-3
+                            };
+                            double used_nudge_factor = 0.0;
+                            unsigned int selected_subface = subface;
+                            bool inside_neighbor_after_nudge = false;
                             typename DoFHandler<dim>::cell_iterator neighbor;
+                            typename DoFHandler<dim>::active_cell_iterator neighbor_active;
+                            std::vector<unsigned int> subface_candidates;
                             if (cell->face(face)->has_children())
-                                neighbor = cell->neighbor_child_on_subface(face, subface);
+                            {
+                                subface_candidates.push_back(subface);
+                                for (unsigned int sf = 0;
+                                     sf < cell->face(face)->n_children(); ++sf)
+                                    if (sf != subface)
+                                        subface_candidates.push_back(sf);
+                            }
                             else
-                                neighbor = cell->neighbor(face);
-                            const Point<dim> neighbor_center = neighbor->center();
-                            child.position += 1.0e-8 * (neighbor_center - child.position);
+                                subface_candidates.push_back(0);
+
+                            double nudge_scale = 1.0e-12;
+                            for (unsigned int candidate_index = 0;
+                                 candidate_index < subface_candidates.size() &&
+                                 !inside_neighbor_after_nudge;
+                                 ++candidate_index)
+                            {
+                                const unsigned int candidate_subface =
+                                    subface_candidates[candidate_index];
+                                typename DoFHandler<dim>::cell_iterator candidate_neighbor;
+                                if (cell->face(face)->has_children())
+                                    candidate_neighbor =
+                                        cell->neighbor_child_on_subface(face,
+                                                                       candidate_subface);
+                                else
+                                    candidate_neighbor = cell->neighbor(face);
+
+                                typename DoFHandler<dim>::active_cell_iterator candidate_active(
+                                    &triangulation, candidate_neighbor->level(),
+                                    candidate_neighbor->index(), &dof_handler_flux);
+                                AssertThrow(candidate_active->is_active(),
+                                            ExcMessage("Atlas branch target neighbor is not active."));
+
+                                const Point<dim> neighbor_center =
+                                    candidate_neighbor->center();
+                                const Tensor<1,dim> nudge_direction =
+                                    neighbor_center - before_nudge;
+                                const double nudge_direction_norm =
+                                    nudge_direction.norm();
+                                AssertThrow(nudge_direction_norm > 0.0,
+                                            ExcMessage("Cannot nudge atlas packet toward a zero-distance neighbor center."));
+                                const double candidate_nudge_scale = std::max(
+                                    std::max(cell->diameter(),
+                                             candidate_active->diameter()),
+                                    1.0e-12);
+
+                                for (unsigned int n = 0;
+                                     n < sizeof(nudge_factors) / sizeof(nudge_factors[0]);
+                                     ++n)
+                                {
+                                    const double candidate_nudge_factor =
+                                        nudge_factors[n];
+                                    const Point<dim> candidate_position =
+                                        before_nudge +
+                                        (candidate_nudge_factor *
+                                         candidate_nudge_scale /
+                                         nudge_direction_norm) *
+                                        nudge_direction;
+                                    const bool inside_candidate =
+                                        candidate_active->point_inside(
+                                            candidate_position);
+                                    if (atlas_verbose_packet_dbg)
+                                        std::cout << std::setprecision(17)
+                                                  << "ATLAS_PACKET_DBG rank "
+                                                  << my_rank
+                                                  << " event neighbor_candidate"
+                                                  << " Eid "
+                                                  << child.receptor_id
+                                                  << " Sid " << child.seed_id
+                                                  << " child_branch "
+                                                  << child.branch_id
+                                                  << " flow_step "
+                                                  << flow_step
+                                                  << " from_cell "
+                                                  << cell->id().to_string()
+                                                  << " face " << face
+                                                  << " requested_subface "
+                                                  << subface
+                                                  << " candidate_subface "
+                                                  << candidate_subface
+                                                  << " candidate_neighbor_cell "
+                                                  << candidate_neighbor->id().to_string()
+                                                  << " candidate_nudge_factor "
+                                                  << candidate_nudge_factor
+                                                  << " candidate_nudge_distance "
+                                                  << before_nudge.distance(
+                                                         candidate_position)
+                                                  << " inside_candidate "
+                                                  << inside_candidate
+                                                  << std::endl;
+                                    if (inside_candidate)
+                                    {
+                                        neighbor = candidate_neighbor;
+                                        neighbor_active = candidate_active;
+                                        child.position = candidate_position;
+                                        used_nudge_factor =
+                                            candidate_nudge_factor;
+                                        nudge_scale = candidate_nudge_scale;
+                                        selected_subface = candidate_subface;
+                                        inside_neighbor_after_nudge = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!inside_neighbor_after_nudge)
+                            {
+                                child.position = before_nudge;
+                                if (atlas_packet_dbg)
+                                    std::cout << std::setprecision(17)
+                                              << "ATLAS_PACKET_WARN rank "
+                                              << my_rank
+                                              << " event neighbor_nudge_failed"
+                                              << " Eid " << child.receptor_id
+                                              << " Sid " << child.seed_id
+                                              << " child_branch "
+                                              << child.branch_id
+                                              << " flow_step " << flow_step
+                                              << " from_cell "
+                                              << cell->id().to_string()
+                                              << " terminal_id "
+                                              << branch.terminal.id
+                                              << " face " << face
+                                              << " requested_subface "
+                                              << subface
+                                              << " candidate_subfaces "
+                                              << subface_candidates.size()
+                                              << " x " << before_nudge[0]
+                                              << " y " << before_nudge[1]
+                                              << " z " << before_nudge[2]
+                                              << std::endl;
+                            }
+                            AssertThrow(inside_neighbor_after_nudge,
+                                        ExcMessage("Could not nudge atlas branch inside any known face-neighbor cell."));
                             const unsigned int owner = neighbor->subdomain_id();
+                            if (atlas_verbose_packet_dbg)
+                            {
+                                std::cout << std::setprecision(17)
+                                          << "ATLAS_PACKET_DBG rank " << my_rank
+                                          << " event neighbor_transfer"
+                                          << " Eid " << child.receptor_id
+                                          << " Sid " << child.seed_id
+                                          << " child_branch " << child.branch_id
+                                          << " flow_step " << flow_step
+                                          << " from_cell " << cell->id().to_string()
+                                          << " face " << face
+                                          << " subface " << subface
+                                          << " selected_subface "
+                                          << selected_subface
+                                          << " neighbor_cell " << neighbor->id().to_string()
+                                          << " neighbor_subdomain " << owner
+                                          << " before_nudge_x " << before_nudge[0]
+                                          << " before_nudge_y " << before_nudge[1]
+                                          << " before_nudge_z " << before_nudge[2]
+                                          << " after_nudge_x " << child.position[0]
+                                          << " after_nudge_y " << child.position[1]
+                                          << " after_nudge_z " << child.position[2]
+                                          << " nudge_distance "
+                                          << before_nudge.distance(child.position)
+                                          << " nudge_factor " << used_nudge_factor
+                                          << " nudge_scale " << nudge_scale
+                                          << " inside_neighbor_after_nudge "
+                                          << inside_neighbor_after_nudge
+                                          << " source_contains_after_nudge "
+                                          << cell->point_inside(child.position)
+                                          << std::endl;
+                            }
                             if (owner == my_rank)
-                                local_queue.push_back(child);
+                            {
+                                if (atlas_verbose_packet_dbg)
+                                    std::cout << std::setprecision(17)
+                                              << "ATLAS_PACKET_DBG rank " << my_rank
+                                              << " event push_local_queue"
+                                              << " Eid " << child.receptor_id
+                                              << " Sid " << child.seed_id
+                                              << " child_branch " << child.branch_id
+                                              << " target_cell " << neighbor->id().to_string()
+                                              << " inside_target "
+                                              << inside_neighbor_after_nudge
+                                              << " dt_remaining " << child.dt_remaining
+                                              << std::endl;
+                                LocalQueueEntry child_entry;
+                                child_entry.packet = child;
+                                child_entry.has_cell = true;
+                                child_entry.cell = neighbor_active;
+                                push_local_entry(child_entry);
+                            }
                             else
                             {
                                 AssertThrow(owner < n_proc,
                                             ExcMessage("Atlas branch has invalid destination rank."));
+                                if (atlas_verbose_packet_dbg)
+                                    std::cout << std::setprecision(17)
+                                              << "ATLAS_PACKET_DBG rank " << my_rank
+                                              << " event send_remote"
+                                              << " Eid " << child.receptor_id
+                                              << " Sid " << child.seed_id
+                                              << " child_branch " << child.branch_id
+                                              << " target_rank " << owner
+                                              << " target_cell " << neighbor->id().to_string()
+                                              << " dt_remaining " << child.dt_remaining
+                                              << std::endl;
                                 send[owner].push_back(child);
                             }
                         }
                         else
                         {
+                            if (atlas_verbose_packet_dbg)
+                                std::cout << std::setprecision(17)
+                                          << "ATLAS_PACKET_DBG rank " << my_rank
+                                          << " event terminal_non_subface"
+                                          << " Eid " << child.receptor_id
+                                          << " Sid " << child.seed_id
+                                          << " child_branch " << child.branch_id
+                                          << " flow_step " << flow_step
+                                          << " cell " << cell->id().to_string()
+                                          << " terminal_kind "
+                                          << static_cast<unsigned int>(branch.terminal.kind)
+                                          << " terminal_id " << branch.terminal.id
+                                          << " x " << child.position[0]
+                                          << " y " << child.position[1]
+                                          << " z " << child.position[2]
+                                          << " age " << child.age
+                                          << " length " << child.aquifer_length
+                                          << std::endl;
                             output << child.receptor_id << ' ' << child.seed_id << ' '
                                    << child.branch_id << ' ' << child.parent_branch_id << ' '
                                    << child.weight << ' ' << child.age << ' '
@@ -680,6 +1194,7 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                                    << child.position[2] << ' '
                                    << static_cast<unsigned int>(branch.terminal.kind) << ' '
                                    << branch.terminal.id << '\n';
+                            output.flush();
                         }
                     }
                     const double weight_scale = std::max(std::abs(parent.weight), 1.0);
@@ -702,12 +1217,15 @@ void NPSAT_TRACE<dim>::run_trajectory_atlas()
                         std::max(1, topt.sim_opt.n_max_proc_exchanges)))
                 {
                     for (unsigned int p = 0; p < active.size(); ++p)
+                    {
                         output << active[p].receptor_id << ' ' << active[p].seed_id << ' '
                                << active[p].branch_id << ' ' << active[p].parent_branch_id << ' '
                                << active[p].weight << ' ' << active[p].age << ' '
                                << active[p].aquifer_length << ' '
                                << active[p].position[0] << ' ' << active[p].position[1] << ' '
                                << active[p].position[2] << " 3 0\n";
+                        output.flush();
+                    }
                     active.clear();
                     break;
                 }
