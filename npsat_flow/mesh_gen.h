@@ -58,15 +58,8 @@ namespace npsat_flow {
 
         static void write_parallel_coarse_tria_to_files(const TriaType &tria, const std::string &prefix, const MPI_Comm &mpi_communicator);
 
-    private:
-        static void build_box_grid(TriaType &triangulation, const user_options& uo,const MPI_Comm& mpi_communicator);
-        static void build_file_grid(TriaType &triangulation, const user_options& uo, const MPI_Comm& mpi_communicator);
-        static void read_2d_grid(BaseTriaType &triangulation, const user_options& uo);
-        static double signed_polygon_area(const std::vector<Point<basedim>> &vertices,
-                                          const unsigned int cell_vertices[4]);
-        static void convert_to_parallel(const Triangulation<dim>& tria3D, TriaType& triangulation);
-        static void assign_default_boundary_ids(TriaType& triangulation);
-
+        // Public so diagnostics can evaluate the same input surfaces used to
+        // conform the mesh without duplicating the input-function parser.
         struct SurfaceEvaluator
         {
             bool enabled = false;
@@ -88,6 +81,15 @@ namespace npsat_flow {
         static SurfaceEvaluator make_surface_evaluator(const std::string &spec,
                                                        const MPI_Comm &mpi_communicator,
                                                        const std::string &input_path);
+
+    private:
+        static void build_box_grid(TriaType &triangulation, const user_options& uo,const MPI_Comm& mpi_communicator);
+        static void build_file_grid(TriaType &triangulation, const user_options& uo, const MPI_Comm& mpi_communicator);
+        static void read_2d_grid(BaseTriaType &triangulation, const user_options& uo);
+        static double signed_polygon_area(const std::vector<Point<basedim>> &vertices,
+                                          const unsigned int cell_vertices[4]);
+        static void convert_to_parallel(const Triangulation<dim>& tria3D, TriaType& triangulation);
+        static void assign_default_boundary_ids(TriaType& triangulation);
 
         static std::shared_ptr<InterpInterface<dim>> make_vertical_distribution(
             const user_options &uo,

@@ -198,6 +198,7 @@ namespace npsat_flow {
             //[misc]
             ("Misc.Print_matrices", po::value<int>()->default_value(1), "Print matrices Debug only")
             ("Misc.Verbose_level", po::value<int>()->default_value(0), "How much output you want [0 1 2]")
+            ("Misc.Assembly_progress_frequency", po::value<int>()->default_value(10), "Assembly progress reporting interval in percent [0,100]; 0 disables reporting")
             ("Misc.LogFile", po::value<std::string>()->default_value(""), "Detailed nonlinear log file (relative paths use Paths.Output; empty disables it)")
             ("Misc.Dry_wel_log", po::value<int>()->default_value(0), "Maintain per-rank dry-well snapshots and a rank-0 minimum-water-table summary when nonzero")
 
@@ -422,6 +423,10 @@ namespace npsat_flow {
                 { //Misc
                     uo.print_matrices = vm_cfg["Misc.Print_matrices"].as<int>() == 1;
                     uo.verbose_level = vm_cfg["Misc.Verbose_level"].as<int>();
+                    uo.assembly_progress_frequency = vm_cfg["Misc.Assembly_progress_frequency"].as<int>();
+                    AssertThrow(uo.assembly_progress_frequency >= 0 &&
+                                    uo.assembly_progress_frequency <= 100,
+                                ExcMessage("Misc.Assembly_progress_frequency must be between 0 and 100."));
                     uo.log_file = vm_cfg["Misc.LogFile"].as<std::string>();
                     uo.dry_well_log = vm_cfg["Misc.Dry_wel_log"].as<int>();
                 }

@@ -365,7 +365,7 @@ void NPSAT_FLOW<dim>::setup_local_cell_well_link() {
 
 
             //pcout << "SL in cell: " << screen_length_inside[i_well] << ", cwc " << cwc << ", cwc2 " << cwc2 << std::endl;
-            npsat_flow::CellWellLink link;
+            npsat_flow::CellWellLink link;e 
             link.well_global_index = well_id;
             link.well_owner_rank = numbers::invalid_unsigned_int;
             link.cwc = cwc;
@@ -451,18 +451,52 @@ void NPSAT_FLOW<dim>::setup_well_index_sets_by_segments() {
 
         if (!zero_wells.empty())
         {
+            const std::string input_root =
+                npsat_flow::join_paths(uo.main_path, uo.input_path);
+            const auto domain_top =
+                npsat_flow::GridBuilder<dim>::make_surface_evaluator(
+                    uo.top_fnc, mpi_communicator, input_root);
+            const auto domain_bottom =
+                npsat_flow::GridBuilder<dim>::make_surface_evaluator(
+                    uo.bot_fnc, mpi_communicator, input_root);
+            const std::string failed_wells_file =
+                output_prefix_path() + "_wells_without_cells.csv";
+
             if (my_rank == 0)
             {
-                pcout << "ERROR: Found " << zero_wells.size()
-                      << " wells with zero intersections (likely outside domain).\n"
-                      << "First well IDs (up to 50): ";
-                const unsigned int cap = std::min<unsigned int>(50, zero_wells.size());
-                for (unsigned int k = 0; k < cap; ++k)
+                std::ofstream output(failed_wells_file);
+                AssertThrow(output.good(),
+                            ExcMessage("Could not open failed-wells output file: " +
+                                       failed_wells_file));
+                output << "rowid,Eid,X,Y,Wtop,Wbot,Dom_top,Dom_bot\n";
+                output << std::setprecision(16);
+
+                for (const unsigned int rowid : zero_wells)
                 {
-                    if (k) pcout << ",";
-                    pcout << zero_wells[k];
+                    const auto &well = mnwells.wells[rowid];
+                    Point<dim> location;
+                    location[0] = well.x;
+                    location[1] = well.y;
+                    if (dim > 2)
+                        location[dim - 1] = 0.0;
+
+                    output << rowid << ',' << well.Eid << ','
+                           << well.x << ',' << well.y << ','
+                           << well.top << ',' << well.bottom << ','
+                           << domain_top.value(location,
+                                               std::numeric_limits<double>::quiet_NaN()) << ','
+                           << domain_bottom.value(location,
+                                                  std::numeric_limits<double>::quiet_NaN()) << '\n';
                 }
-                pcout << std::endl;
+                output.close();
+                AssertThrow(output.good(),
+                            ExcMessage("Failed while writing failed-wells output file: " +
+                                       failed_wells_file));
+
+                pcout << "ERROR: Found " << zero_wells.size()
+                      << " wells with zero intersections (likely outside domain). "
+                      << "All failed wells were written to " << failed_wells_file
+                      << std::endl;
             }
             AssertThrow(zero_wells.empty(),
                         ExcMessage("Wells with zero intersections detected."));
@@ -534,7 +568,8 @@ void NPSAT_FLOW<dim>::setup_well_index_sets_by_segments() {
     AssertThrow(owned_sum == n_wells,
                 ExcMessage("Well DoF ownership is not a valid partition."));
 
-    { //TODO THis should be removed in real applications
+    if (uo.verbose_level > 1)
+    {
         for (unsigned int i = 0; i < n_proc; ++i)
         {
             // Ensure ranks print in order 0,1,2,... with no interleaving

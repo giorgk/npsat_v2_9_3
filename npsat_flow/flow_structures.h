@@ -185,6 +185,7 @@ namespace npsat_flow {
         Solver_uo solver_opt;
         NonlinearControls NLC;
         int verbose_level = 0;
+        int assembly_progress_frequency = 10;
     };
 
     template <typename T>

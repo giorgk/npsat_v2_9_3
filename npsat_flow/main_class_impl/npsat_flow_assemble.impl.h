@@ -147,6 +147,69 @@ void NPSAT_FLOW<dim>::assemble_system() {
     // Extractor for vector FE (flux)
     FEValuesExtractors::Vector flux(0);
 
+    const unsigned int progress_frequency =
+        static_cast<unsigned int>(uo.assembly_progress_frequency);
+    unsigned int next_progress_percent =
+        progress_frequency == 0 ? 101u : progress_frequency;
+    unsigned long long locally_assembled_cells = 0;
+    const unsigned long long global_cell_count =
+        static_cast<unsigned long long>(triangulation.n_global_active_cells());
+    const std::chrono::steady_clock::time_point assembly_cell_loop_start =
+        std::chrono::steady_clock::now();
+
+    const auto report_assembly_progress = [&]()
+    {
+        while (next_progress_percent <= 100u)
+        {
+            const unsigned long long local_threshold =
+                (static_cast<unsigned long long>(next_progress_percent) * n_local_cells + 99u) / 100u;
+            if (locally_assembled_cells < local_threshold)
+                break;
+
+            unsigned long long globally_assembled_cells = 0;
+            const int ierr = MPI_Allreduce(&locally_assembled_cells,
+                                           &globally_assembled_cells,
+                                           1,
+                                           MPI_UNSIGNED_LONG_LONG,
+                                           MPI_SUM,
+                                           mpi_communicator);
+            AssertThrow(ierr == MPI_SUCCESS,
+                        ExcMessage("MPI_Allreduce failed while reporting assembly progress."));
+
+            const double local_elapsed_seconds =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                              assembly_cell_loop_start).count();
+            const double elapsed_seconds =
+                Utilities::MPI::max(local_elapsed_seconds, mpi_communicator);
+            const double completed_fraction =
+                global_cell_count > 0
+                    ? static_cast<double>(globally_assembled_cells) /
+                          static_cast<double>(global_cell_count)
+                    : 1.0;
+            const double eta_seconds =
+                completed_fraction > 0.0
+                    ? elapsed_seconds * (1.0 - completed_fraction) / completed_fraction
+                    : 0.0;
+
+            pcout << "Assembly progress: " << globally_assembled_cells
+                  << " / " << global_cell_count << " cells ("
+                  << std::fixed << std::setprecision(1)
+                  << 100.0 * completed_fraction << "%), elapsed "
+                  << std::setprecision(1) << elapsed_seconds << " s, ETA "
+                  << std::max(0.0, eta_seconds) << " s"
+                  << std::defaultfloat << std::endl;
+
+            if (next_progress_percent == 100u)
+                next_progress_percent = 101u;
+            else
+                next_progress_percent =
+                    std::min(100u, next_progress_percent + progress_frequency);
+        }
+    };
+
+    // Ranks without owned cells still participate in every progress collective.
+    report_assembly_progress();
+
     for (auto trace_cell = dof_handler_trace.begin_active(); trace_cell != dof_handler_trace.end(); ++trace_cell) {
         //pcout << "Cell index: " << cell_index << std::endl;
         if (!trace_cell->is_locally_owned())
@@ -733,6 +796,9 @@ void NPSAT_FLOW<dim>::assemble_system() {
                         ExcMessage("Cell storage mass must be finite and nonnegative."));
             local_element_data_rt_0dg0.set_M00(slot, storage_mass);
         }
+
+        ++locally_assembled_cells;
+        report_assembly_progress();
     }// End of active cells loop
 
     // ----------------------------------------------------------------------------
