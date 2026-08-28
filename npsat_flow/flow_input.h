@@ -50,7 +50,7 @@ namespace npsat_flow {
         if (vm_cmd.empty())
         {
             pcout << " To run NPSAT_v2 specify the configuration file as" << std::endl;
-            pcout << "-c config" << std::endl << std::endl;;
+            pcout << "-c config" << std::endl << std::endl;
             pcout << "Other command line options are:" << std::endl;
             pcout << commandLineOptions << std::endl;
             return false;

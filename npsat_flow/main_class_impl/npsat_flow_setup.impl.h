@@ -365,7 +365,7 @@ void NPSAT_FLOW<dim>::setup_local_cell_well_link() {
 
 
             //pcout << "SL in cell: " << screen_length_inside[i_well] << ", cwc " << cwc << ", cwc2 " << cwc2 << std::endl;
-            npsat_flow::CellWellLink link;e 
+            npsat_flow::CellWellLink link;
             link.well_global_index = well_id;
             link.well_owner_rank = numbers::invalid_unsigned_int;
             link.cwc = cwc;
