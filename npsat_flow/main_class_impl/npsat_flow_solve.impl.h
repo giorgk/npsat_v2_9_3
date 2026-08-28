@@ -35,7 +35,10 @@ void NPSAT_FLOW<dim>::solve(){
 
     // 4. Solve Schur complement system
     SolverControl solver_control(uo.solver_opt.System_iterations,
-                              uo.solver_opt.System_tol * schur_rhs.l2_norm());
+                              uo.solver_opt.System_tol * schur_rhs.l2_norm(),
+                              uo.verbose_level > 0,
+                              false);
+    solver_control.log_frequency(1);
     SolverCG<TrilinosWrappers::MPI::Vector> solver(solver_control);
 
     TrilinosWrappers::MPI::Vector lambda_owned(lambda_locally_owned_dofs, mpi_communicator);
@@ -51,8 +54,7 @@ void NPSAT_FLOW<dim>::solve(){
     block_solution.block(0) = lambda_owned;
     block_solution.block(0).update_ghost_values();
 
-    if (uo.verbose_level > 0)
-        pcout << "   Schur system (Lambda) converged in " << solver_control.last_step() << " iterations." << std::endl;
+    pcout << "   Schur system (Lambda) converged in " << solver_control.last_step() << " iterations." << std::endl;
     last_linear_iterations = solver_control.last_step();
 
     solution_trace.reinit(lambda_locally_owned_dofs,
