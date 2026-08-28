@@ -331,7 +331,7 @@ void NPSAT_FLOW<dim>::run() {
     else
         initialize_initial_head();
 
-    if (uo.dry_well_log != 0)
+    if (uo.dry_well_log != 0 && !uo.sim_opt.confined)
     {
         const std::string summary_name =
             output_prefix_path() + "_dry_wells_summary.csv";
@@ -340,6 +340,9 @@ void NPSAT_FLOW<dim>::run() {
         MPI_Barrier(mpi_communicator);
         pcout << "Dry-well summary enabled: " << summary_name << std::endl;
     }
+    else if (uo.dry_well_log != 0 && uo.sim_opt.confined)
+        pcout << "Dry-well summary disabled: confined simulations cannot have dry wells."
+              << std::endl;
 
     std::ofstream time_step_budget_csv;
     if (my_rank == 0)

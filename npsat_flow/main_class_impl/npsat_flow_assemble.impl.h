@@ -968,14 +968,30 @@ void NPSAT_FLOW<dim>::assemble_system() {
     double local_pumping_loss_magnitude = 0.0;
     std::vector<std::string> local_dry_well_rows;
 
-    assembly_phase_start = start_assembly_phase("assembling well right-hand sides");
+    // Validate and cache every pumping-row lookup on every rank. Previously,
+    // an invalid q_row was queried only by the owning rank; that rank could
+    // throw while all other ranks waited indefinitely in the budget reduction.
+    assembly_phase_start = start_assembly_phase("validating well pumping rates");
+    std::vector<double> well_pumping_rates(n_wells, 0.0);
+    for (std::size_t well_position = 0;
+         well_position < mnwells.wells.size();
+         ++well_position)
+    {
+        const npsat_flow::MNWell &well = mnwells.wells[well_position];
+        AssertThrow(well.global_index < n_wells,
+                    ExcMessage("MNWell.global_index is outside the global well range."));
+        well_pumping_rates[well.global_index] = mnwells.pumping_rate(well.q_row);
+    }
+    finish_assembly_phase("validating well pumping rates", assembly_phase_start);
+
+    assembly_phase_start = start_assembly_phase("assembling owned-well right-hand sides");
 
     for (const auto &well : mnwells.wells)
     {
         const unsigned int w_id = well.global_index;
         if (well_owner_rank[w_id] == static_cast<unsigned int>(my_rank))
         {
-            const double Q_requested = mnwells.pumping_rate(well.q_row);
+            const double Q_requested = well_pumping_rates[w_id];
             local_requested_pumping_magnitude += std::max(-Q_requested, 0.0);
             const bool well_is_dry =
                 (!uo.sim_opt.confined &&
@@ -1016,7 +1032,10 @@ void NPSAT_FLOW<dim>::assemble_system() {
             local_well_prescribed_total += Q_at_time;
         }
     }
+    finish_assembly_phase("assembling owned-well right-hand sides",
+                          assembly_phase_start);
 
+    assembly_phase_start = start_assembly_phase("reducing assembly budget totals");
     {
         const double global_recharge_total = Utilities::MPI::sum(local_recharge_total, mpi_communicator);
         const double global_stream_total = Utilities::MPI::sum(local_stream_total, mpi_communicator);
@@ -1048,9 +1067,10 @@ void NPSAT_FLOW<dim>::assemble_system() {
                   << std::defaultfloat << std::endl;
 
     }
-    finish_assembly_phase("assembling well right-hand sides", assembly_phase_start);
+    finish_assembly_phase("reducing assembly budget totals",
+                          assembly_phase_start);
 
-    if (uo.dry_well_log != 0)
+    if (uo.dry_well_log != 0 && !uo.sim_opt.confined)
     {
         assembly_phase_start = start_assembly_phase("writing dry-well diagnostics");
         const std::string prefix = output_prefix_path();

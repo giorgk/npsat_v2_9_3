@@ -101,7 +101,7 @@ namespace npsat_flow{
             if (b < e) // Only store and send ranges that actually contain indices
             {
                 local_intervals.emplace_back(b, e);
-                if (print_level>0)
+                if (print_level > 1)
                     std::cout << "Rank " << my_rank << " local interval [" << b << " - " << e <<"]" << std::endl;
             }
 
@@ -148,7 +148,7 @@ namespace npsat_flow{
         }
         std::sort(owner_ranges.begin(), owner_ranges.end(),
                   [](const OwnerRange &a, const OwnerRange &b) { return a.begin < b.begin; });
-        if (print_level)
+        if (print_level > 1)
             print_owner_ranges(my_rank);
     }
 
