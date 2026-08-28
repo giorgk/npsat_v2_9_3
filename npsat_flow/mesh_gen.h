@@ -114,7 +114,9 @@ namespace npsat_flow {
         static void mark_top_neighborhood_from_cell(const CellIterator& cell, const unsigned int depth);
         static bool cell_has_top_boundary(const CellIterator& cell);
         static bool cell_has_other_boundary(const CellIterator& cell);
-        static bool cell_contains_well(const CellIterator& cell, MNWellCollection& mnwells);
+        static bool cell_contains_well(const CellIterator& cell,
+                                       MNWellCollection& mnwells,
+                                       const Refinement_options &refinement_options);
         static bool cell_has_top_stream(const CellIterator& cell, StreamCollection<dim>& streams);
         static bool cell_has_dirichlet_boundary(const CellIterator &cell,
                                                 const DirichletBoundary<dim> &dirichlet_bc);
@@ -620,7 +622,9 @@ namespace npsat_flow {
     }
 
     template <int dim>
-    bool GridBuilder<dim>::cell_contains_well(const CellIterator& cell, MNWellCollection& mnwells)
+    bool GridBuilder<dim>::cell_contains_well(const CellIterator& cell,
+                                              MNWellCollection& mnwells,
+                                              const Refinement_options &refinement_options)
     {
         Polygon quad;
 
@@ -647,7 +651,9 @@ namespace npsat_flow {
         Xquad,
         Yquad,
         topZ,
-        bottomZ);
+        bottomZ,
+        refinement_options.well_min_screen_length,
+        refinement_options.well_min_screen_cell_fraction);
         return !wells_in_cell.empty();
     }
 
@@ -740,7 +746,7 @@ namespace npsat_flow {
                     {
                         if (!targets.mnwells->wells.empty())
                         {
-                            if (cell_contains_well(cell, *targets.mnwells))
+                            if (cell_contains_well(cell, *targets.mnwells, uo.ref_opt))
                             {
                                 well_marked_cell_ids.insert(cell->id());
                                 cell->set_refine_flag();

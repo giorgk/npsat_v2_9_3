@@ -175,7 +175,9 @@ namespace npsat_flow {
             std::vector<double>& screen_length_inside,
             std::vector<double>& well_bot,
             std::vector<double>& X, std::vector<double>& Y,
-            std::vector<double>& Ztop, std::vector<double>& Zbot)
+            std::vector<double>& Ztop, std::vector<double>& Zbot,
+            const double min_screen_length,
+            const double min_screen_cell_fraction)
         {
             wells_inside.clear();
             bg::model::box<Point2D> bbox;
@@ -204,8 +206,12 @@ namespace npsat_flow {
                     if (w.top >= p_bot && p_top >= w.bottom)
                     {
                         ScreenClip clip = well_length_inside_cell(w.bottom, w.top, p_bot, p_top);
-                        if (clip.L > 0.5)
-                        {// We add this only if there is at least half meter well screen in the cell
+                        const double cell_height = std::max(0.0, p_top - p_bot);
+                        const double min_overlap =
+                            std::min(min_screen_length,
+                                     min_screen_cell_fraction * cell_height);
+                        if (clip.L > min_overlap)
+                        {
                             screen_length_inside.push_back(clip.L);
                             wells_inside.push_back(&w);
                             well_bot.push_back(clip.z_low);

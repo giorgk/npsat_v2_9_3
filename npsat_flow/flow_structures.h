@@ -22,6 +22,8 @@ namespace npsat_flow {
         int dirichlet = 0;
         int GHB = 0;
         int neumann = 0;
+        double well_min_screen_length = 0.5;
+        double well_min_screen_cell_fraction = 0.1;
     };
 
     struct Sources_uo

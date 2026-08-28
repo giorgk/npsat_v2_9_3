@@ -99,6 +99,10 @@ namespace npsat_flow {
             ("Refinement.Dirichlet", po::value<int>()->default_value(1), "Stream refinement")
             ("Refinement.GHB", po::value<int>()->default_value(1), "Stream refinement")
             ("Refinement.Neumann", po::value<int>()->default_value(1), "Stream refinement")
+            ("Refinement.WellMinScreenLength", po::value<double>()->default_value(0.5),
+             "Maximum minimum well-screen overlap length used for a cell-well link")
+            ("Refinement.WellMinScreenCellFraction", po::value<double>()->default_value(0.1),
+             "Minimum well-screen overlap as a fraction of local cell height")
 
 
             //[Boundary conditions] dirichlet
@@ -268,6 +272,14 @@ namespace npsat_flow {
                     uo.ref_opt.dirichlet = vm_cfg["Refinement.Dirichlet"].as<int>();
                     uo.ref_opt.GHB = vm_cfg["Refinement.GHB"].as<int>();
                     uo.ref_opt.neumann = vm_cfg["Refinement.Neumann"].as<int>();
+                    uo.ref_opt.well_min_screen_length =
+                        vm_cfg["Refinement.WellMinScreenLength"].as<double>();
+                    uo.ref_opt.well_min_screen_cell_fraction =
+                        vm_cfg["Refinement.WellMinScreenCellFraction"].as<double>();
+                    AssertThrow(uo.ref_opt.well_min_screen_length >= 0.0,
+                                ExcMessage("Refinement.WellMinScreenLength must be non-negative."));
+                    AssertThrow(uo.ref_opt.well_min_screen_cell_fraction >= 0.0,
+                                ExcMessage("Refinement.WellMinScreenCellFraction must be non-negative."));
                 }
 
                 {// Boundary conditions

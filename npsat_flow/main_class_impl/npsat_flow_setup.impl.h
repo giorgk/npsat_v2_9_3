@@ -247,7 +247,9 @@ void NPSAT_FLOW<dim>::setup_local_cell_well_link() {
         npsat_flow::quad_and_Zcoords_from_cell<dim, typename DoFHandler<dim>::active_cell_iterator>(
             quad, trace_cell, Xquad, Yquad, topZ, bottomZ);
         mnwells.find_wells_in_polygon(quad, wells_in_cell,screen_length_inside,well_z_bot,
-            Xquad,Yquad,topZ,bottomZ);
+            Xquad,Yquad,topZ,bottomZ,
+            uo.ref_opt.well_min_screen_length,
+            uo.ref_opt.well_min_screen_cell_fraction);
 
         if (wells_in_cell.empty())
             continue;
