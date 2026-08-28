@@ -26,6 +26,30 @@ void NPSAT_FLOW<dim>::assemble_system() {
 
     TimerOutput::Scope t(this->computing_timer, "assemble");
 
+    typedef std::chrono::steady_clock AssemblyPhaseClock;
+    const auto start_assembly_phase = [&](const std::string &phase_name)
+    {
+        if (uo.verbose_level > 0)
+            pcout << "ASM phase: " << phase_name << " started" << std::endl;
+        return AssemblyPhaseClock::now();
+    };
+    const auto finish_assembly_phase = [&](const std::string &phase_name,
+                                           const AssemblyPhaseClock::time_point &phase_start)
+    {
+        if (uo.verbose_level > 0)
+        {
+            const double local_seconds =
+                std::chrono::duration<double>(AssemblyPhaseClock::now() - phase_start).count();
+            const double global_seconds =
+                Utilities::MPI::max(local_seconds, mpi_communicator);
+            pcout << "ASM phase: " << phase_name << " finished in "
+                  << std::fixed << std::setprecision(2) << global_seconds
+                  << " s" << std::defaultfloat << std::endl;
+        }
+    };
+
+    AssemblyPhaseClock::time_point assembly_phase_start =
+        start_assembly_phase("clearing matrices and right-hand sides");
     { // Make system matrices zero
         for (unsigned int i = 0; i < block_system_matrix.n_block_rows(); ++i)
             for (unsigned int j = 0; j < block_system_matrix.n_block_cols(); ++j)
@@ -34,6 +58,8 @@ void NPSAT_FLOW<dim>::assemble_system() {
         for (unsigned int b = 0; b < block_rhs_vector.n_blocks(); ++b)
             block_rhs_vector.block(b) = 0;
     }
+    finish_assembly_phase("clearing matrices and right-hand sides",
+                          assembly_phase_start);
 
     // Common deal data in assembly
     QGauss<dim> quadrature_formula(fe_flux.degree + 2);
@@ -108,7 +134,23 @@ void NPSAT_FLOW<dim>::assemble_system() {
     std::vector<unsigned char> recharge_receiver(n_local_cells, 0);
     std::vector<double> receiver_recharge_area(n_local_cells, 0.0);
     std::vector<double> receiver_effective_z_top(n_local_cells,std::numeric_limits<double>::quiet_NaN());
-    identify_top_active_cells(recharge_receiver, receiver_recharge_area, receiver_effective_z_top);
+    if (uo.sim_opt.confined)
+    {
+        previous_recharge_receiver_gids.clear();
+        if (uo.verbose_level > 0)
+            pcout << "ASM phase: identifying recharge receiver cells skipped "
+                     "(confined; recharge is applied directly to boundary face 5)"
+                  << std::endl;
+    }
+    else
+    {
+        assembly_phase_start = start_assembly_phase("identifying recharge receiver cells");
+        identify_top_active_cells(recharge_receiver,
+                                  receiver_recharge_area,
+                                  receiver_effective_z_top);
+        finish_assembly_phase("identifying recharge receiver cells",
+                              assembly_phase_start);
+    }
 
     double local_recharge_total = 0.0;          // positive into the aquifer
     double local_stream_total = 0.0;            // positive into the aquifer
@@ -154,8 +196,9 @@ void NPSAT_FLOW<dim>::assemble_system() {
     unsigned long long locally_assembled_cells = 0;
     const unsigned long long global_cell_count =
         static_cast<unsigned long long>(triangulation.n_global_active_cells());
-    const std::chrono::steady_clock::time_point assembly_cell_loop_start =
-        std::chrono::steady_clock::now();
+    assembly_phase_start = start_assembly_phase("assembling local cells");
+    const AssemblyPhaseClock::time_point assembly_cell_loop_start =
+        AssemblyPhaseClock::now();
 
     const auto report_assembly_progress = [&]()
     {
@@ -257,7 +300,10 @@ void NPSAT_FLOW<dim>::assemble_system() {
 
         npsat_flow::CellNonlinearData nl_cell_data;
         compute_cell_r_and_storage(nl_cell_data, head_cell, head_dof_indices);
-        const double routed_receiver_effective_z_top = (recharge_receiver[slot] != 0) ? receiver_effective_z_top[slot] : std::numeric_limits<double>::quiet_NaN();
+        const double routed_receiver_effective_z_top =
+            (!uo.sim_opt.confined && recharge_receiver[slot] != 0)
+                ? receiver_effective_z_top[slot]
+                : std::numeric_limits<double>::quiet_NaN();
         const double selected_effective_z_top = effective_top_for_cell(nl_cell_data, routed_receiver_effective_z_top);
         if (std::isfinite(selected_effective_z_top))
             compute_cell_r_and_storage(nl_cell_data, head_cell, head_dof_indices, selected_effective_z_top);
@@ -379,7 +425,13 @@ void NPSAT_FLOW<dim>::assemble_system() {
 
                 const double top_face_area = flux_cell->face(i_face)->measure();
                 AssertThrow(top_face_area > 0.0, ExcMessage("Recharge receiver top face has zero measure."));
-                const double recharge_area_scale = receiver_recharge_area[slot] / top_face_area;
+                // In confined simulations every top boundary face receives its
+                // own recharge directly. Area accumulation/scaling is needed
+                // only when unconfined recharge has been routed between cells.
+                const double recharge_area_scale =
+                    uo.sim_opt.confined
+                        ? 1.0
+                        : receiver_recharge_area[slot] / top_face_area;
 
                 // Assuming gw_recharge is in m/day (flux per unit area)
                 // This is the typical unit for groundwater recharge
@@ -800,10 +852,12 @@ void NPSAT_FLOW<dim>::assemble_system() {
         ++locally_assembled_cells;
         report_assembly_progress();
     }// End of active cells loop
+    finish_assembly_phase("assembling local cells", assembly_phase_start);
 
     // ----------------------------------------------------------------------------
     // MPI exchange for values
     // ----------------------------------------------------------------------------
+    assembly_phase_start = start_assembly_phase("exchanging MNW coupling data");
     std::vector<npsat_flow::Well10Entry>  recv_10;
     std::vector<npsat_flow::Well11Entry>  recv_11;
     std::vector<npsat_flow::WellRhsEntry> recv_rhs1;
@@ -868,7 +922,9 @@ void NPSAT_FLOW<dim>::assemble_system() {
         if (lambda_locally_owned_dofs.is_element(e.row))
             block_system_matrix.block(0,1).add(e.row, e.col, e.val);
     }
+    finish_assembly_phase("exchanging MNW coupling data", assembly_phase_start);
 
+    assembly_phase_start = start_assembly_phase("reducing global well data");
     std::vector<double> global_well_cwc_eff_sum(n_wells, 0.0);
     std::vector<double> global_well_wet_screen_sum(n_wells, 0.0);
     std::vector<double> global_well_total_screen_sum(n_wells, 0.0);
@@ -900,6 +956,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
                       MPI_MAX,
                       mpi_communicator);
     }
+    finish_assembly_phase("reducing global well data", assembly_phase_start);
 
     // --------------------------------------------------
     //   Well RHS: Qtot (prescribed pumping) add only once
@@ -910,6 +967,8 @@ void NPSAT_FLOW<dim>::assemble_system() {
     double local_requested_pumping_magnitude = 0.0;
     double local_pumping_loss_magnitude = 0.0;
     std::vector<std::string> local_dry_well_rows;
+
+    assembly_phase_start = start_assembly_phase("assembling well right-hand sides");
 
     for (const auto &well : mnwells.wells)
     {
@@ -989,9 +1048,11 @@ void NPSAT_FLOW<dim>::assemble_system() {
                   << std::defaultfloat << std::endl;
 
     }
+    finish_assembly_phase("assembling well right-hand sides", assembly_phase_start);
 
     if (uo.dry_well_log != 0)
     {
+        assembly_phase_start = start_assembly_phase("writing dry-well diagnostics");
         const std::string prefix = output_prefix_path();
         const std::string rank_string = Utilities::int_to_string(my_rank, 4);
         const std::string rank_name =
@@ -1111,6 +1172,7 @@ void NPSAT_FLOW<dim>::assemble_system() {
             }
         }
         MPI_Barrier(mpi_communicator);
+        finish_assembly_phase("writing dry-well diagnostics", assembly_phase_start);
     }
 
     // =====================================================
@@ -1121,12 +1183,20 @@ void NPSAT_FLOW<dim>::assemble_system() {
     {
         for (unsigned int j = 0; j < block_system_matrix.n_block_cols(); ++j)
         {
+            std::ostringstream phase_name;
+            phase_name << "compressing matrix block (" << i << ',' << j << ')';
+            assembly_phase_start = start_assembly_phase(phase_name.str());
             block_system_matrix.block(i,j).compress(VectorOperation::add);
+            finish_assembly_phase(phase_name.str(), assembly_phase_start);
         }
     }
     for (unsigned int i = 0; i < block_rhs_vector.n_blocks(); ++i)
     {
+        std::ostringstream phase_name;
+        phase_name << "compressing right-hand-side block " << i;
+        assembly_phase_start = start_assembly_phase(phase_name.str());
         block_rhs_vector.block(i).compress(VectorOperation::add);
+        finish_assembly_phase(phase_name.str(), assembly_phase_start);
     }
     MPI_Barrier(mpi_communicator);
 
@@ -1159,24 +1229,8 @@ void NPSAT_FLOW<dim>::identify_top_active_cells(std::vector<unsigned char> &rech
     std::unordered_set<std::uint64_t> current_recharge_receiver_gids;
 
     if (uo.sim_opt.confined) {
-        unsigned int top_face = 5;
-        for (auto trace_cell = dof_handler_trace.begin_active();
-             trace_cell != dof_handler_trace.end();
-             ++trace_cell)
-        {
-            if (!trace_cell->is_locally_owned())
-                continue;
-
-            if (!trace_cell->face(top_face)->at_boundary())
-                continue;
-
-            const unsigned int slot = trace_cell->user_index();
-            AssertIndexRange(slot, recharge_receiver.size());
-
-            recharge_receiver[slot] = 1;
-            receiver_recharge_area[slot] += trace_cell->face(top_face)->measure();
-        }
-
+        // Confined assembly handles recharge directly on boundary face 5, so
+        // no receiver discovery or per-cell receiver data is required here.
         previous_recharge_receiver_gids.clear();
         return;
     }
@@ -1596,6 +1650,9 @@ bool NPSAT_FLOW<dim>::should_receive_gw_recharge(const std::vector<unsigned char
 
     if (i_face != 5)
         return false;
+
+    if (uo.sim_opt.confined)
+        return cell->face(i_face)->at_boundary();
 
     const unsigned int slot = cell->user_index();
     AssertIndexRange(slot, recharge_receiver.size());
