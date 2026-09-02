@@ -690,7 +690,26 @@ namespace npsat_flow {
 
         if (uo.ref_opt.initial > 0)
         {
-            triangulation.refine_global(static_cast<unsigned int>(uo.ref_opt.initial));
+            // triangulation.refine_global(static_cast<unsigned int>(uo.ref_opt.initial));
+            //
+            // Mark only locally owned cells explicitly. This avoids the
+            // refine_global() path while preserving one global refinement per
+            // requested initial-refinement level on a distributed mesh.
+            for (unsigned int level = 0;
+                 level < static_cast<unsigned int>(uo.ref_opt.initial);
+                 ++level)
+            {
+                for (auto cell = triangulation.begin_active();
+                     cell != triangulation.end();
+                     ++cell)
+                {
+                    if (cell->is_locally_owned())
+                        cell->set_refine_flag();
+                }
+
+                triangulation.execute_coarsening_and_refinement();
+            }
+
             assign_default_boundary_ids(triangulation);
             MPI_Barrier(mpi_communicator);
         }
