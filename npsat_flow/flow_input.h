@@ -33,7 +33,7 @@ namespace npsat_flow {
         : mpi_communicator(MPI_COMM_WORLD),
           pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
     {
-        Version = "0.0.04";
+        Version = "0.0.05";
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
