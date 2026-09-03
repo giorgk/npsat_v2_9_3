@@ -10,11 +10,14 @@ namespace npsat_trace {
 
     inline std::string vface_rt0_filename(const std::string &prefix,
                                           const int my_rank,
-                                          const unsigned int step_no)
+                                          const unsigned int step_no,
+                                          const bool coarse_dominated)
     {
         const std::string step     = Utilities::int_to_string(step_no, 3);
         const std::string str_rank = Utilities::int_to_string(my_rank, 4);
 
+        if (coarse_dominated)
+            return prefix + "_Vface_coarse_rt_vals_rank_" + str_rank + "_step_" + step + ".bin";
         return prefix + "_Vface_rt0_vals_rank_" + str_rank + "_step_" + step + ".bin";
     }
     // ----------------------------
@@ -39,15 +42,22 @@ namespace npsat_trace {
         const dealii::IndexSet &relevant_now,
         const int my_rank,
         const unsigned int step_no,
+        const bool coarse_dominated,
         TrilinosWrappers::MPI::Vector &vface) { // must already be reinit(owned,relevant)
 
         (void)relevant_now;
 
-        const std::string filename = vface_rt0_filename(prefix, my_rank, step_no);
+        const std::string filename = vface_rt0_filename(prefix, my_rank, step_no,
+                                                        coarse_dominated);
 
         std::ifstream in(filename, std::ios::binary);
-        if (!in.good())
+        if (!in.good()) {
+            if (coarse_dominated)
+                throw std::runtime_error(
+                    "Could not open coarse RT0 velocity file: " + filename +
+                    ". Run the flow model with Output.Save_coarse_velocities=1.");
             throw std::runtime_error("Could not open file for reading: " + filename);
+        }
 
         VFaceRt0Header h;
         read_pod(in, h.magic);

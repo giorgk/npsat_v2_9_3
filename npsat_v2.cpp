@@ -159,7 +159,8 @@ private:
     void save_water_table_per_step(const std::string &prefix) const;
     void save_velocity_per_step(const std::string &prefix) const;
     void build_and_write_vface_rt0_per_step(const std::string &prefix,
-          TrilinosWrappers::MPI::Vector &vface_global) const;
+          TrilinosWrappers::MPI::Vector &vface_global,
+          const bool coarse_dominated) const;
 
     // Methods to print the output data
     void write_well_exchange_identity_csv_mpi(const std::string &prefix) const;

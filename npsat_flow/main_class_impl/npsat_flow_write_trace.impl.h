@@ -360,12 +360,19 @@ void NPSAT_FLOW<dim>::save_velocity_per_step(const std::string &prefix) const {
         return;
     pcout << "\t save_velocity_per_step..." << std::endl;
     TrilinosWrappers::MPI::Vector vface_global;
-    build_and_write_vface_rt0_per_step(prefix, vface_global);
+    if (uo.save_fine_velocities)
+        build_and_write_vface_rt0_per_step(prefix, vface_global, false);
+    if (uo.save_coarse_velocities)
+        build_and_write_vface_rt0_per_step(prefix, vface_global, true);
+
+    AssertThrow(uo.save_fine_velocities || uo.save_coarse_velocities,
+                ExcMessage("Output.Save_trace_data is enabled, but both velocity outputs are disabled."));
 }
 
 template <int dim>
 void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &prefix,
-    TrilinosWrappers::MPI::Vector &vface_global) const {
+    TrilinosWrappers::MPI::Vector &vface_global,
+    const bool coarse_dominated) const {
 
     if (!uo.save_trace_data)
         return;
@@ -389,18 +396,21 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
 
     const unsigned int n_flux_dofs = fe_flux.n_dofs_per_cell();
     std::vector<types::global_dof_index> flux_dof_indices(n_flux_dofs);
+    std::vector<types::global_dof_index> coarse_flux_dof_indices(n_flux_dofs);
     Vector<double> q_coeff(n_flux_dofs);
+    Vector<double> coarse_q_coeff(n_flux_dofs);
 
     // RT0: 1 DoF per face (we’ll fetch the face DoF id explicitly)
     std::vector<types::global_dof_index> face_flux_dofs(fe_flux.n_dofs_per_face());
     AssertThrow(face_flux_dofs.size() == 1,
                 ExcMessage("Expected RT0: fe_flux.n_dofs_per_face() == 1."));
 
-    // Helper: decide face ownership (same-level) + coarse-fine responsibility
-    // Ownership rule for tracing export:
+    // Helper: decide face ownership (same-level) + coarse-fine responsibility.
+    // Ownership rule for fine-dominated tracing export:
     // - boundary face: write it
     // - same-level interior: one deterministic owner writes it
     // - coarse-fine interface: ONLY refined side writes active child-face DoFs
+    // Coarse-dominated output additionally writes the coarse parent DoF.
     auto should_write_face =
     [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
         const unsigned int f) -> bool
@@ -413,15 +423,14 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
         if (!neigh->is_active())
         {
             // Neighbor is refined => I am the coarse side.
-            // Do NOT write the parent face here. We want subface values later.
-            // Let refined children write their own child-face DoFs.
-            return false;
+            return coarse_dominated;
         }
 
         if (neigh->level() < cell->level())
         {
             // Neighbor is coarser => I am refined.
-            // I MUST write my child-face DoF, otherwise it stays zero.
+            // Fine output uses the recovered child value. Coarse output uses
+            // the neighboring parent value below.
             return true;
         }
 
@@ -431,7 +440,7 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
 
     // Helper: compute outward flux Q = ∫ q_h · n dS on a given cell face
     auto compute_face_flux_outward =
-    [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
+    [&](const typename DoFHandler<dim>::cell_iterator &cell,
         const unsigned int f,
         const Vector<double> &q_coeff_cell) -> double
     {
@@ -478,10 +487,47 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
             // -----------------------------
             // Compute Q_outward = ∫ q_h · n_cell dS  (cell outward normal)
             // -----------------------------
-            // Compute outward flux Q (cell outward normal)
-            const double Q_outward = compute_face_flux_outward(flux_cell, f, q_coeff);
-            // Convert to NORMAL VELOCITY (flux density)
-            const double Af = flux_cell->face(f)->measure();
+            double Q_outward = 0.0;
+            double Af = 0.0;
+
+            if (coarse_dominated && !flux_cell->at_boundary(f) &&
+                flux_cell->neighbor(f)->is_active() &&
+                flux_cell->neighbor(f)->level() < flux_cell->level())
+            {
+                // Active fine cell next to an active coarse cell.  Use the
+                // coarse parent-face average, with the sign reversed into the
+                // fine cell's outward-normal convention.
+                const typename DoFHandler<dim>::cell_iterator coarse_cell =
+                    flux_cell->neighbor(f);
+                const unsigned int coarse_face = f ^ 1u;
+                AssertThrow(coarse_cell->is_active(),
+                            ExcMessage("Expected an active coarse neighbor."));
+                AssertThrow(coarse_cell->face(coarse_face)->has_children(),
+                            ExcMessage("Opposite coarse face is not the parent of the fine interface."));
+
+                coarse_cell->get_dof_indices(coarse_flux_dof_indices);
+                for (unsigned int i = 0; i < n_flux_dofs; ++i)
+                {
+                    AssertThrow(flux_locally_relevant_dofs.is_element(
+                                    coarse_flux_dof_indices[i]),
+                                ExcMessage("Coarse RT0 coefficient is not locally relevant on the fine-cell owner."));
+                    coarse_q_coeff(i) = q_new[coarse_flux_dof_indices[i]];
+                }
+
+                Q_outward = -compute_face_flux_outward(coarse_cell,
+                                                       coarse_face,
+                                                       coarse_q_coeff);
+                Af = coarse_cell->face(coarse_face)->measure();
+            }
+            else
+            {
+                Q_outward = compute_face_flux_outward(flux_cell, f, q_coeff);
+                Af = flux_cell->face(f)->measure();
+            }
+
+            // For a child in the coarse-dominated dataset, both quantities
+            // above refer to the parent face, so the ratio is the coarse RT0
+            // face-average normal velocity.
             AssertThrow(Af > 0.0, ExcMessage("Face area/measure is zero."));
             const double v_outward = Q_outward / Af;
             // Store v on RT0 face DoF index
@@ -517,8 +563,9 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
     bool write_exchange_binary = true;
     if (write_exchange_binary)
     {
-        const std::string filename =
-            prefix + "_Vface_rt0_vals_rank_" + str_rank + "_step_" + step + ".bin";
+        const std::string filename = coarse_dominated
+            ? prefix + "_Vface_coarse_rt_vals_rank_" + str_rank + "_step_" + step + ".bin"
+            : prefix + "_Vface_rt0_vals_rank_" + str_rank + "_step_" + step + ".bin";
 
         std::ofstream out(filename, std::ios::binary);
         AssertThrow(out.good(), ExcMessage("Could not open file for writing: " + filename));

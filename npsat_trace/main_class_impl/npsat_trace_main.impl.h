@@ -97,6 +97,8 @@ void NPSAT_TRACE<dim>::load_vface_rt0_values_step(const std::string &prefix, con
                                                  locally_relevant_dofs,
                                                  my_rank,
                                                  step_no,
+                                                 topt.sim_opt.velocity_interpolation ==
+                                                     npsat_trace::VelocityInterpolationScheme::coarse_rt,
                                                  vface);
 }
 

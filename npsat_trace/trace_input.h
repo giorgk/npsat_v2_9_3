@@ -91,7 +91,7 @@ namespace npsat_trace {
         ("Simulation.MaxAge", po::value<int>()->default_value(std::numeric_limits<int>::max()), "Maximum total particle travel time")
         ("Simulation.Max_particles_per_iter", po::value<int>()->default_value(20000), "Maximum number of particles per iterations")
         ("Simulation.TransportMethod", po::value<std::string>()->default_value("point"), "Transport method: point or trajectory_atlas")
-        ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0, idw, or cell_idw")
+        ("Simulation.VelocityInterpolation", po::value<std::string>()->default_value("split_rt0"), "Velocity interpolation scheme: split_rt0, coarse_rt, idw, or cell_idw")
 
         //[IDW]
         ("IDW.Power", po::value<double>()->default_value(2.0), "Inverse-distance weighting power")
@@ -196,12 +196,14 @@ namespace npsat_trace {
                     const std::string interpolation = vm_cfg["Simulation.VelocityInterpolation"].as<std::string>();
                     if (interpolation == "split_rt0")
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::split_rt0;
+                    else if (interpolation == "coarse_rt")
+                        tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::coarse_rt;
                     else if (interpolation == "idw")
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::idw;
                     else if (interpolation == "cell_idw")
                         tr_opt.sim_opt.velocity_interpolation = VelocityInterpolationScheme::cell_idw;
                     else
-                        throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0', 'idw', or 'cell_idw'.");
+                        throw std::runtime_error("Simulation.VelocityInterpolation must be 'split_rt0', 'coarse_rt', 'idw', or 'cell_idw'.");
                 }
 
                 {// Trajectory atlas

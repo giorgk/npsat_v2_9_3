@@ -229,6 +229,7 @@ namespace npsat_trace {
                                   const std::vector<CellVelocitySample<dim> > &samples);
         Tensor<1, dim> interpolate_cell_idw_velocity(const Point<dim> &x_phys) const;
         void write_subcells_arrays_to_txt(const std::string &filename) const;
+        Tensor<1, dim> interpolate_coarse_rt0(const Point<dim> &p_ref) const;
         Tensor<1, dim> interpolate_rt0_reference_velocity(const Point<dim> &p_ref) const;
         void locate_subcell_and_local_coords(const Point<dim> &p_ref, unsigned int &subcell_id_out,
                                             double &rx, double &ry, double &rz) const;
@@ -255,6 +256,10 @@ namespace npsat_trace {
         //   on z-faces: q = ix + 2*iy
         // ------------------------------------------------------------
         std::array<std::array<double, 4>, 6> face_subface_vn{};
+
+        // Six outward face-normal velocities used by the ordinary, unsplit
+        // coarse-dominated RT0 reconstruction.
+        std::array<double, 6> coarse_rt_vn_outward{};
 
         // 8 RT0 subcells
         std::array<SubcellRT0Data, 8> subcells{};
@@ -363,7 +368,19 @@ namespace npsat_trace {
         // Cell-center IDW uses its precomputed vector cloud and does not need
         // the current cell's face/subface cache. The established schemes keep
         // their existing initialization path unchanged.
-        if (scheme != VelocityInterpolationScheme::cell_idw)
+        if (scheme == VelocityInterpolationScheme::coarse_rt)
+        {
+            const unsigned int slot = static_cast<unsigned int>(cell->user_index());
+            for (unsigned int f = 0; f < GeometryInfo<dim>::faces_per_cell; ++f)
+            {
+                coarse_rt_vn_outward[f] = rt0_map.vn_outward(slot, f, vface);
+                // The trajectory-atlas boundary seeding code consumes the
+                // canonical four-slot representation. For coarse_rt every
+                // slot is the same parent RT0 face value.
+                face_subface_vn[f].fill(coarse_rt_vn_outward[f]);
+            }
+        }
+        else if (scheme != VelocityInterpolationScheme::cell_idw)
             for (unsigned int f=0; f<GeometryInfo<dim>::faces_per_cell; ++f)
                 face_subface_vn[f] =
                     build_face_subface_values_canonical(f, rt0_map, vface);
@@ -392,6 +409,11 @@ namespace npsat_trace {
 
         if (scheme == VelocityInterpolationScheme::split_rt0)
             build_subcells();
+        else if (scheme == VelocityInterpolationScheme::coarse_rt)
+        {
+            // The six face values above completely define the parent RT0
+            // field. No topology-dependent subcell cache is required.
+        }
         else if (scheme == VelocityInterpolationScheme::idw)
             build_idw_cache(idw_options);
         else {
@@ -1423,11 +1445,32 @@ namespace npsat_trace {
         const VelocityInterpolationScheme scheme, Tensor<1,dim> &u_phys, double &vmag_out) const {
         if (scheme == VelocityInterpolationScheme::split_rt0)
             u_phys = interpolate_rt0_reference_velocity(x_ref);
+        else if (scheme == VelocityInterpolationScheme::coarse_rt)
+            u_phys = interpolate_coarse_rt0(x_ref);
         else if (scheme == VelocityInterpolationScheme::idw)
             u_phys = interpolate_idw_velocity(x_phys);
         else
             u_phys = interpolate_cell_idw_velocity(x_phys);
         vmag_out = u_phys.norm();
+    }
+
+    /** Evaluate one ordinary RT0 field on the complete parent cell. */
+    template<int dim>
+    Tensor<1, dim> CellVelocityCacheRT0Split3D<dim>::interpolate_coarse_rt0(
+        const Point<dim> &p_ref) const
+    {
+        const double rx = 0.5 * (p_ref[0] + 1.0);
+        const double ry = 0.5 * (p_ref[1] + 1.0);
+        const double rz = 0.5 * (p_ref[2] + 1.0);
+
+        Tensor<1, dim> u;
+        u[0] = -coarse_rt_vn_outward[xm] * (1.0 - rx) +
+                coarse_rt_vn_outward[xp] * rx;
+        u[1] = -coarse_rt_vn_outward[ym] * (1.0 - ry) +
+                coarse_rt_vn_outward[yp] * ry;
+        u[2] = -coarse_rt_vn_outward[zm] * (1.0 - rz) +
+                coarse_rt_vn_outward[zp] * rz;
+        return u;
     }
 
     template<int dim>
@@ -1600,6 +1643,7 @@ namespace npsat_trace {
     void CellVelocityCacheRT0Split3D<dim>::clear()
     {
         face_subface_vn = std::array<std::array<double, 4>, 6>();
+        coarse_rt_vn_outward = std::array<double, 6>();
 
         subcells = std::array<SubcellRT0Data, 8>();
         lateral_normals = std::array<LateralNormal2D, 4>();

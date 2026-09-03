@@ -16,6 +16,7 @@ namespace npsat_trace {
 
     enum class VelocityInterpolationScheme : unsigned char {
         split_rt0,
+        coarse_rt,
         idw,
         cell_idw
     };

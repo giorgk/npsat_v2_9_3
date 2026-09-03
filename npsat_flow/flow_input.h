@@ -183,6 +183,8 @@ namespace npsat_flow {
             ("Output.Print_mesh_with_prop", po::value<int>()->default_value(0), "Write initial mesh with nodal properties and boundary-condition data")
             ("Output.Print_mesh_exit", po::value<int>()->default_value(0), "Write the initial mesh output and exit before setup/solve")
             ("Output.Save_trace_data", po::value<int>()->default_value(0), "Enable printing data for tracing simulation")
+            ("Output.Save_fine_velocities", po::value<int>()->default_value(1), "Write the existing fine-dominated RT0 velocity data for particle tracing")
+            ("Output.Save_coarse_velocities", po::value<int>()->default_value(0), "Write coarse-dominated RT0 velocity data for particle tracing")
             ("Output.Print_vtk", po::value<int>()->default_value(0), "Enable VTK output")
             ("Output.Print_water_table", po::value<int>()->default_value(0), "Write water table DAT output")
             ("Output.Print_q_to_vtu", po::value<int>()->default_value(0), "Write face flux cell data to VTU/VTK outputs")
@@ -415,6 +417,8 @@ namespace npsat_flow {
                     uo.print_mesh_with_prop = vm_cfg["Output.Print_mesh_with_prop"].as<int>() == 1;
                     uo.print_mesh_exit = vm_cfg["Output.Print_mesh_exit"].as<int>() == 1;
                     uo.save_trace_data = vm_cfg["Output.Save_trace_data"].as<int>() == 1;
+                    uo.save_fine_velocities = vm_cfg["Output.Save_fine_velocities"].as<int>() == 1;
+                    uo.save_coarse_velocities = vm_cfg["Output.Save_coarse_velocities"].as<int>() == 1;
                     uo.print_vtk = vm_cfg["Output.Print_vtk"].as<int>() == 1;
                     uo.print_water_table = vm_cfg["Output.Print_water_table"].as<int>() == 1;
                     uo.print_q_to_vtu = vm_cfg["Output.Print_q_to_vtu"].as<int>() == 1;
@@ -430,6 +434,12 @@ namespace npsat_flow {
                     uo.print_wellbore_segments_legacy_vtk = vm_cfg["Output.Print_wellbore_segments_legacy_vtk"].as<int>() == 1;
                     uo.print_wellboreflow_csv = vm_cfg["Output.Print_wellboreflow_csv"].as<int>() == 1;
                     uo.print_well_resid_csv = vm_cfg["Output.Print_well_resid_csv"].as<int>() == 1;
+                    if (uo.save_trace_data &&
+                        !uo.save_fine_velocities &&
+                        !uo.save_coarse_velocities)
+                        throw std::runtime_error(
+                            "Output.Save_trace_data requires at least one of "
+                            "Output.Save_fine_velocities or Output.Save_coarse_velocities.");
                 }
 
                 { //Misc

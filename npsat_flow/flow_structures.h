@@ -156,6 +156,8 @@ namespace npsat_flow {
         bool print_mesh_with_prop = false;
         bool print_mesh_exit = false;
         bool save_trace_data = false;
+        bool save_fine_velocities = true;
+        bool save_coarse_velocities = false;
         bool print_vtk = false;
         bool print_water_table = false;
         bool print_q_to_vtu = false;

@@ -61,10 +61,15 @@ Two transport methods (selected via `TransportMethod` config key):
 - `"point"` — legacy per-particle streamline integration
 - `"trajectory_atlas"` — precomputes trajectory bundles per element (`traj_atlas.h`, 923 lines)
 
-Three velocity interpolation schemes (selected via `VelocityInterpolation`):
+Four velocity interpolation schemes (selected via `VelocityInterpolation`):
 - `"split_rt0"` — exact RT0 element-based interpolation; sub-divides elements into tetrahedra
+- `"coarse_rt"` — ordinary six-face RT0 interpolation using the coarse-dominated velocity export
 - `"idw"` — inverse-distance weighted from scattered velocity samples
 - `"cell_idw"` — cell-centered IDW
+
+With `Save_trace_data` enabled, flow output keeps the legacy fine-dominated
+velocity export by default. `Save_fine_velocities` and
+`Save_coarse_velocities` select either or both velocity datasets.
 
 Key files:
 - `cached_velocity.h` — cell-based velocity caching with lazy evaluation (1816 lines)
