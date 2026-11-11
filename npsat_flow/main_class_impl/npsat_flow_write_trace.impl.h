@@ -570,43 +570,72 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
             ? prefix + "_Vface_coarse_rt_vals_rank_" + str_rank + "_step_" + step + ".bin"
             : prefix + "_Vface_rt0_vals_rank_" + str_rank + "_step_" + step + ".bin";
 
-        std::ofstream out(filename, std::ios::binary);
-        AssertThrow(out.good(), ExcMessage("Could not open file for writing: " + filename));
+        const unsigned int batch_size = uo.velocity_write_batch_size;
+        const unsigned int n_batches =
+            (n_proc + batch_size - 1) / batch_size;
 
-        // Header:
-        // [uint64 magic] [uint32 version]
-        // [uint64 step_no] [double time] [double dt]
-        // [uint64 n_local]
-        // [double checksum_sum] [double checksum_maxabs]
-        // [n_local * double values]
-        const std::uint64_t magic   = 0x4E505341545F5646ULL; // "NPSAT_VF" (arbitrary)
-        const std::uint32_t version = 3;
+        pcout << "    Writing "
+              << (coarse_dominated ? "coarse" : "fine")
+              << " velocity files in " << n_batches
+              << " batch(es), up to " << batch_size
+              << " MPI rank(s) per batch." << std::endl;
 
-        const std::uint64_t step_u64 = static_cast<std::uint64_t>(step_no);
-        const double t  = time_tracking.file_step();
-        // A negative duration marks a steady solution (an infinite physical
-        // step) without changing the binary layout used by the trace reader.
-        const double dt = uo.sim_opt.steady_state
-                              ? -1.0
-                              : time_tracking.duration();
+        for (unsigned int batch = 0; batch < n_batches; ++batch)
+        {
+            const unsigned int first_rank = batch * batch_size;
+            const unsigned int last_rank =
+                std::min(n_proc, first_rank + batch_size);
 
-        const double sum_d    = static_cast<double>(checksum_sum);
-        const double maxabs_d = checksum_maxabs;
+            if (my_rank >= first_rank && my_rank < last_rank)
+            {
+                std::ofstream out(filename, std::ios::binary);
+                AssertThrow(out.good(),
+                            ExcMessage("Could not open file for writing: " + filename));
 
-        out.write(reinterpret_cast<const char*>(&magic),    sizeof(magic));
-        out.write(reinterpret_cast<const char*>(&version),  sizeof(version));
-        out.write(reinterpret_cast<const char*>(&step_u64), sizeof(step_u64));
-        out.write(reinterpret_cast<const char*>(&t),        sizeof(t));
-        out.write(reinterpret_cast<const char*>(&dt),       sizeof(dt));
-        out.write(reinterpret_cast<const char*>(&n_local),  sizeof(n_local));
-        out.write(reinterpret_cast<const char*>(&sum_d),    sizeof(sum_d));
-        out.write(reinterpret_cast<const char*>(&maxabs_d), sizeof(maxabs_d));
+                // Header:
+                // [uint64 magic] [uint32 version]
+                // [uint64 step_no] [double time] [double dt]
+                // [uint64 n_local]
+                // [double checksum_sum] [double checksum_maxabs]
+                // [n_local * double values]
+                const std::uint64_t magic = 0x4E505341545F5646ULL; // "NPSAT_VF"
+                const std::uint32_t version = 3;
 
-        if (n_local > 0)
-            out.write(reinterpret_cast<const char*>(values.data()),
-                      static_cast<std::streamsize>(values.size() * sizeof(double)));
+                const std::uint64_t step_u64 =
+                    static_cast<std::uint64_t>(step_no);
+                const double t = time_tracking.file_step();
+                // A negative duration marks a steady solution without
+                // changing the binary layout used by the trace reader.
+                const double dt = uo.sim_opt.steady_state
+                                      ? -1.0
+                                      : time_tracking.duration();
 
-        out.close();
+                const double sum_d = static_cast<double>(checksum_sum);
+                const double maxabs_d = checksum_maxabs;
+
+                out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+                out.write(reinterpret_cast<const char*>(&version), sizeof(version));
+                out.write(reinterpret_cast<const char*>(&step_u64), sizeof(step_u64));
+                out.write(reinterpret_cast<const char*>(&t), sizeof(t));
+                out.write(reinterpret_cast<const char*>(&dt), sizeof(dt));
+                out.write(reinterpret_cast<const char*>(&n_local), sizeof(n_local));
+                out.write(reinterpret_cast<const char*>(&sum_d), sizeof(sum_d));
+                out.write(reinterpret_cast<const char*>(&maxabs_d), sizeof(maxabs_d));
+
+                if (n_local > 0)
+                    out.write(reinterpret_cast<const char*>(values.data()),
+                              static_cast<std::streamsize>(values.size() * sizeof(double)));
+
+                out.flush();
+                AssertThrow(out.good(),
+                            ExcMessage("Failed writing velocity file: " + filename));
+                out.close();
+                AssertThrow(!out.fail(),
+                            ExcMessage("Failed closing velocity file: " + filename));
+            }
+
+            MPI_Barrier(mpi_communicator);
+        }
     }
 
     // -------------------------

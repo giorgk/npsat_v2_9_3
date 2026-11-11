@@ -159,6 +159,7 @@ namespace npsat_flow {
         bool save_trace_data = false;
         bool save_fine_velocities = true;
         bool save_coarse_velocities = false;
+        unsigned int velocity_write_batch_size = 16;
         bool print_vtk = false;
         bool print_water_table = false;
         bool print_q_to_vtu = false;

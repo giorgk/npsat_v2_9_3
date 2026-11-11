@@ -33,7 +33,7 @@ namespace npsat_flow {
         : mpi_communicator(MPI_COMM_WORLD),
           pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
     {
-        Version = "0.0.06";
+        Version = "0.0.07";
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
@@ -186,6 +186,7 @@ namespace npsat_flow {
             ("Output.Save_trace_data", po::value<int>()->default_value(0), "Enable printing data for tracing simulation")
             ("Output.Save_fine_velocities", po::value<int>()->default_value(1), "Write the existing fine-dominated RT0 velocity data for particle tracing")
             ("Output.Save_coarse_velocities", po::value<int>()->default_value(0), "Write coarse-dominated RT0 velocity data for particle tracing")
+            ("Output.Velocity_write_batch_size", po::value<unsigned int>()->default_value(16), "Maximum number of MPI ranks writing velocity files at the same time")
             ("Output.Print_vtk", po::value<int>()->default_value(0), "Enable VTK output")
             ("Output.Print_water_table", po::value<int>()->default_value(0), "Write water table DAT output")
             ("Output.Print_q_to_vtu", po::value<int>()->default_value(0), "Write face flux cell data to VTU/VTK outputs")
@@ -421,6 +422,7 @@ namespace npsat_flow {
                     uo.save_trace_data = vm_cfg["Output.Save_trace_data"].as<int>() == 1;
                     uo.save_fine_velocities = vm_cfg["Output.Save_fine_velocities"].as<int>() == 1;
                     uo.save_coarse_velocities = vm_cfg["Output.Save_coarse_velocities"].as<int>() == 1;
+                    uo.velocity_write_batch_size = vm_cfg["Output.Velocity_write_batch_size"].as<unsigned int>();
                     uo.print_vtk = vm_cfg["Output.Print_vtk"].as<int>() == 1;
                     uo.print_water_table = vm_cfg["Output.Print_water_table"].as<int>() == 1;
                     uo.print_q_to_vtu = vm_cfg["Output.Print_q_to_vtu"].as<int>() == 1;
@@ -442,6 +444,9 @@ namespace npsat_flow {
                         throw std::runtime_error(
                             "Output.Save_trace_data requires at least one of "
                             "Output.Save_fine_velocities or Output.Save_coarse_velocities.");
+                    if (uo.velocity_write_batch_size == 0)
+                        throw std::runtime_error(
+                            "Output.Velocity_write_batch_size must be at least 1.");
                 }
 
                 { //Misc
