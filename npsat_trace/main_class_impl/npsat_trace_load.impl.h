@@ -300,7 +300,7 @@ void NPSAT_TRACE<dim>::load_velocity_io_mapping() {
 
     const std::uint64_t expected_magic = 0x4E50534154564D50ull; // must match writer
     AssertThrow(magic == expected_magic, ExcMessage("Bad magic in mapping file: " + filename));
-    AssertThrow(version == 2, ExcMessage("Unsupported mapping file version: " + filename));
+    AssertThrow(version == 3, ExcMessage("Unsupported mapping file version: " + filename));
     AssertThrow(dim_u32 == dim, ExcMessage("Mapping dim mismatch: " + filename));
     AssertThrow(fpc_u32 == faces_per_cell, ExcMessage("faces_per_cell mismatch: " + filename));
     AssertThrow(n_global_dofs_file == dof_handler_flux.n_dofs(), ExcMessage("Global RT0 DoF count mismatch; incompatible mesh/DoFs."));

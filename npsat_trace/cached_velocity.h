@@ -32,13 +32,6 @@ namespace npsat_trace {
     // ------------------------------------------------------------
     enum FaceId : unsigned int { xm=0, xp=1, ym=2, yp=3, zm=4, zp=5 };
 
-    template<int dim>
-    static unsigned int opposite_face(const unsigned int f)
-    {
-        AssertIndexRange(f, GeometryInfo<dim>::faces_per_cell);
-        return f ^ 1;
-    }
-
     static unsigned int canonical_slot_from_projected_offsets(const double a,
                                                           const double b)
     {
@@ -465,6 +458,7 @@ namespace npsat_trace {
         get_face_ordering_directions(f, ex_dir, ey_dir, ez_dir, dir1, dir2);
 
         const Point<dim> cf = cell->face(f)->center();
+        const unsigned int nchild_face = cell->neighbor_face_no(f);
 
         for (unsigned int subface = 0; subface < n_sub; ++subface) {
             const auto coarse_subface = cell->face(f)->child(subface);
@@ -472,8 +466,6 @@ namespace npsat_trace {
             const auto neighbor_child = cell->neighbor_child_on_subface(f, subface);
             AssertThrow(neighbor_child->is_active(), ExcMessage("Expected active neighbor child on subface."));
 
-            // Find which face of neighbor_child matches coarse_subface
-            const unsigned int nchild_face = opposite_face<dim>(f);
             const unsigned int child_slot = static_cast<unsigned int>(neighbor_child->user_index());
 
             // RT0 velocity outward with respect to the refined child cell

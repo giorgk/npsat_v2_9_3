@@ -261,7 +261,7 @@ bool NPSAT_TRACE<dim>::outward_face_velocity(
 
         const typename DoFHandler<dim>::cell_iterator neighbor =
             cell->neighbor(face_no);
-        if (neighbor->level() < cell->level()) {
+        if (cell->neighbor_is_coarser(face_no)) {
             velocity = stored_velocity;
             return true;
         }
@@ -276,7 +276,7 @@ bool NPSAT_TRACE<dim>::outward_face_velocity(
     // interface. Reconstruct its mean from the active neighbor-child faces.
     double flux_density_times_area = 0.0;
     double area_sum = 0.0;
-    const unsigned int opposite = face_no ^ 1u;
+    const unsigned int child_face = cell->neighbor_face_no(face_no);
     for (unsigned int subface = 0;
          subface < cell->face(face_no)->n_children();
          ++subface) {
@@ -287,8 +287,10 @@ bool NPSAT_TRACE<dim>::outward_face_velocity(
         // a complete center-velocity sample on this rank.
         if (child->is_artificial())
             return false;
-        child->face(opposite)->get_dof_indices(face_dof);
-        const double child_area = cell->face(face_no)->child(subface)->measure();
+
+        child->face(child_face)->get_dof_indices(face_dof);
+        const double child_area =
+            cell->face(face_no)->child(subface)->measure();
         // Child values are stored outward relative to the refined child;
         // reverse them to obtain the coarse-cell outward orientation.
         flux_density_times_area -= vface[face_dof[0]] * child_area;

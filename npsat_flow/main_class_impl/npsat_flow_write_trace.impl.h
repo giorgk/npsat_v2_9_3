@@ -25,7 +25,7 @@ void NPSAT_FLOW<dim>::save_velocity_io_mapping_once() const {
 
     // ---------------- Header ----------------
     const std::uint64_t magic   = 0x4E50534154564D50ull; // "NPSATVMP" (arbitrary)
-    const std::uint32_t version = 2;
+    const std::uint32_t version = 3;
     const std::uint32_t dim_u32 = dim;
     const std::uint32_t fpc_u32 = faces_per_cell;
 
@@ -66,7 +66,7 @@ void NPSAT_FLOW<dim>::save_velocity_io_mapping_once() const {
 
         // Refined-side active child face at coarse-fine interface:
         // stored child-face value is outward w.r.t. this refined child cell.
-        if (neigh->level() < cell->level())
+        if (cell->neighbor_is_coarser(f))
             return static_cast<std::int8_t>(+1);
 
         // Same-level shared face:
@@ -112,7 +112,7 @@ void NPSAT_FLOW<dim>::save_velocity_io_mapping_once() const {
                 const auto neigh = cell->neighbor(f);
                 if (!neigh->is_active())
                     fl |= 0x1; // coarse-side parent face
-                else if (neigh->level() < cell->level())
+                else if (cell->neighbor_is_coarser(f))
                     fl |= 0x2; // refined-side active child face
             }
             r.flags[f] = fl;
@@ -426,7 +426,7 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
             return coarse_dominated;
         }
 
-        if (neigh->level() < cell->level())
+        if (cell->neighbor_is_coarser(f))
         {
             // Neighbor is coarser => I am refined.
             // Fine output uses the recovered child value. Coarse output uses
@@ -490,20 +490,23 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
             double Q_outward = 0.0;
             double Af = 0.0;
 
-            if (coarse_dominated && !flux_cell->at_boundary(f) &&
-                flux_cell->neighbor(f)->is_active() &&
-                flux_cell->neighbor(f)->level() < flux_cell->level())
+            if (coarse_dominated &&
+                !flux_cell->at_boundary(f) &&
+                flux_cell->neighbor_is_coarser(f))
             {
                 // Active fine cell next to an active coarse cell.  Use the
                 // coarse parent-face average, with the sign reversed into the
                 // fine cell's outward-normal convention.
                 const typename DoFHandler<dim>::cell_iterator coarse_cell =
                     flux_cell->neighbor(f);
-                const unsigned int coarse_face = f ^ 1u;
+                const unsigned int coarse_face =
+                    flux_cell->neighbor_face_no(f);
                 AssertThrow(coarse_cell->is_active(),
                             ExcMessage("Expected an active coarse neighbor."));
+                AssertThrow(coarse_face < GeometryInfo<dim>::faces_per_cell,
+                            ExcMessage("Invalid coarse-neighbor face number."));
                 AssertThrow(coarse_cell->face(coarse_face)->has_children(),
-                            ExcMessage("Opposite coarse face is not the parent of the fine interface."));
+                            ExcMessage("The matching coarse face is not the parent of the fine interface."));
 
                 coarse_cell->get_dof_indices(coarse_flux_dof_indices);
                 for (unsigned int i = 0; i < n_flux_dofs; ++i)
@@ -577,7 +580,7 @@ void NPSAT_FLOW<dim>::build_and_write_vface_rt0_per_step(const std::string &pref
         // [double checksum_sum] [double checksum_maxabs]
         // [n_local * double values]
         const std::uint64_t magic   = 0x4E505341545F5646ULL; // "NPSAT_VF" (arbitrary)
-        const std::uint32_t version = 2;
+        const std::uint32_t version = 3;
 
         const std::uint64_t step_u64 = static_cast<std::uint64_t>(step_no);
         const double t  = time_tracking.file_step();

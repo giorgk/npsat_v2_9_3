@@ -73,7 +73,7 @@ namespace npsat_trace {
         if (h.magic != expected_magic)
             throw std::runtime_error("Bad magic in file: " + filename);
 
-        if (h.version != 2)
+        if (h.version != 3)
             throw std::runtime_error("Unsupported version in file: " + filename);
 
         if (h.step_no != static_cast<std::uint64_t>(step_no))
