@@ -5,6 +5,65 @@
 #ifndef NPSAT_FLOW_SOLVE_IMPL_H
 #define NPSAT_FLOW_SOLVE_IMPL_H
 
+namespace npsat_flow
+{
+    /** SolverControl that periodically reports CG convergence through pcout. */
+    class SolverProgressControl : public SolverControl
+    {
+    public:
+        SolverProgressControl(const unsigned int max_steps,
+                              const double absolute_tolerance,
+                              const int display_frequency,
+                              const double rhs_norm,
+                              ConditionalOStream &pcout)
+            : SolverControl(max_steps, absolute_tolerance, false, false),
+              display_frequency(display_frequency),
+              rhs_norm(rhs_norm),
+              pcout(pcout),
+              start_time(std::chrono::steady_clock::now())
+        {}
+
+        State check(const unsigned int step, const double residual) override
+        {
+            const State state = SolverControl::check(step, residual);
+
+            if (display_frequency > 0 &&
+                (step == 0 || step % static_cast<unsigned int>(display_frequency) == 0 ||
+                 state != iterate))
+            {
+                const double elapsed_seconds =
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                  start_time).count();
+                const double relative_residual =
+                    rhs_norm > 0.0 ? residual / rhs_norm : residual;
+
+                std::ostringstream message;
+                message << "CG iteration " << step
+                        << " | residual " << std::scientific << std::setprecision(6)
+                        << residual
+                        << " | relative " << relative_residual
+                        << " | elapsed " << std::fixed << std::setprecision(1)
+                        << elapsed_seconds << " s";
+
+                if (state == success)
+                    message << " | converged";
+                else if (state == failure)
+                    message << " | failed";
+
+                pcout << message.str() << std::endl;
+            }
+
+            return state;
+        }
+
+    private:
+        const int display_frequency;
+        const double rhs_norm;
+        ConditionalOStream &pcout;
+        const std::chrono::steady_clock::time_point start_time;
+    };
+}
+
 template <int dim>
 void NPSAT_FLOW<dim>::solve(){
     if (uo.verbose_level > 0)
@@ -34,11 +93,13 @@ void NPSAT_FLOW<dim>::solve(){
                                   mpi_communicator);
 
     // 4. Solve Schur complement system
-    SolverControl solver_control(uo.solver_opt.System_iterations,
-                              uo.solver_opt.System_tol * schur_rhs.l2_norm(),
-                              uo.verbose_level > 0,
-                              false);
-    solver_control.log_frequency(1);
+    const double schur_rhs_norm = schur_rhs.l2_norm();
+    npsat_flow::SolverProgressControl solver_control(
+        static_cast<unsigned int>(uo.solver_opt.System_iterations),
+        uo.solver_opt.System_tol * schur_rhs_norm,
+        uo.solver_opt.Display_frequency,
+        schur_rhs_norm,
+        pcout);
     SolverCG<TrilinosWrappers::MPI::Vector> solver(solver_control);
 
     TrilinosWrappers::MPI::Vector lambda_owned(lambda_locally_owned_dofs, mpi_communicator);

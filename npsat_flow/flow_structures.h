@@ -92,6 +92,7 @@ namespace npsat_flow {
     struct Solver_uo {
         int System_iterations = 15000;
         double System_tol = 1e-12;
+        int Display_frequency = 100;
     };
 
     struct NonlinearControls

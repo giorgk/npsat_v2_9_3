@@ -156,6 +156,7 @@ namespace npsat_flow {
             //[Solver]
             ("Solver.System_iterations", po::value<int>()->default_value(15000), "Iterations for system solver")
             ("Solver.System_tol", po::value<double>()->default_value(1e-12), "System solver tolerance")
+            ("Solver.Display_frequency", po::value<int>()->default_value(100), "Display CG convergence every N iterations; zero or negative disables convergence output")
 
             //[Nonlinear]
             ("Nonlinear.Iterations", po::value<unsigned int>()->default_value(25), "Maximum Picard iterations")
@@ -370,6 +371,7 @@ namespace npsat_flow {
                 {//Solver
                     uo.solver_opt.System_iterations = vm_cfg["Solver.System_iterations"].as<int>();
                     uo.solver_opt.System_tol = vm_cfg["Solver.System_tol"].as<double>();
+                    uo.solver_opt.Display_frequency = vm_cfg["Solver.Display_frequency"].as<int>();
                 }
 
                 {//Nonlinear
