@@ -7,6 +7,8 @@
 
 #include <deal.II/base/mpi.h>
 #include <boost/program_options.hpp>
+#include <algorithm>
+#include <cctype>
 
 #include "flow_structures.h"
 #include "helper_func.h"
@@ -33,7 +35,7 @@ namespace npsat_flow {
         : mpi_communicator(MPI_COMM_WORLD),
           pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
     {
-        Version = "0.0.07";
+        Version = "0.0.08";
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
@@ -187,6 +189,10 @@ namespace npsat_flow {
             ("Output.Save_fine_velocities", po::value<int>()->default_value(1), "Write the existing fine-dominated RT0 velocity data for particle tracing")
             ("Output.Save_coarse_velocities", po::value<int>()->default_value(0), "Write coarse-dominated RT0 velocity data for particle tracing")
             ("Output.Velocity_write_batch_size", po::value<unsigned int>()->default_value(16), "Maximum number of MPI ranks writing velocity files at the same time")
+            ("Output.Save_ichnos_data", po::value<int>()->default_value(0), "Write steady-state velocity cloud and graph files for redist/Ichnos")
+            ("Output.Ichnos_format", po::value<std::string>()->default_value("ascii"), "redist/Ichnos export format: ascii or binary")
+            ("Output.Ichnos_points_per_cell", po::value<unsigned int>()->default_value(1), "Number of velocity-cloud quadrature points per cell: 1 or 8")
+            ("Output.Ichnos_face_mode", po::value<std::string>()->default_value("fine"), "Coarse-fine interface velocity source: fine or coarse")
             ("Output.Print_vtk", po::value<int>()->default_value(0), "Enable VTK output")
             ("Output.Print_water_table", po::value<int>()->default_value(0), "Write water table DAT output")
             ("Output.Print_q_to_vtu", po::value<int>()->default_value(0), "Write face flux cell data to VTU/VTK outputs")
@@ -423,6 +429,16 @@ namespace npsat_flow {
                     uo.save_fine_velocities = vm_cfg["Output.Save_fine_velocities"].as<int>() == 1;
                     uo.save_coarse_velocities = vm_cfg["Output.Save_coarse_velocities"].as<int>() == 1;
                     uo.velocity_write_batch_size = vm_cfg["Output.Velocity_write_batch_size"].as<unsigned int>();
+                    uo.save_ichnos_data = vm_cfg["Output.Save_ichnos_data"].as<int>() == 1;
+                    uo.ichnos_format = vm_cfg["Output.Ichnos_format"].as<std::string>();
+                    uo.ichnos_points_per_cell = vm_cfg["Output.Ichnos_points_per_cell"].as<unsigned int>();
+                    uo.ichnos_face_mode = vm_cfg["Output.Ichnos_face_mode"].as<std::string>();
+                    std::transform(uo.ichnos_format.begin(), uo.ichnos_format.end(),
+                                   uo.ichnos_format.begin(),
+                                   [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    std::transform(uo.ichnos_face_mode.begin(), uo.ichnos_face_mode.end(),
+                                   uo.ichnos_face_mode.begin(),
+                                   [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
                     uo.print_vtk = vm_cfg["Output.Print_vtk"].as<int>() == 1;
                     uo.print_water_table = vm_cfg["Output.Print_water_table"].as<int>() == 1;
                     uo.print_q_to_vtu = vm_cfg["Output.Print_q_to_vtu"].as<int>() == 1;
@@ -447,6 +463,18 @@ namespace npsat_flow {
                     if (uo.velocity_write_batch_size == 0)
                         throw std::runtime_error(
                             "Output.Velocity_write_batch_size must be at least 1.");
+                    if (uo.save_ichnos_data && !uo.sim_opt.steady_state)
+                        throw std::runtime_error(
+                            "Output.Save_ichnos_data is supported only when Simulation.Steady_state = 1.");
+                    if (uo.ichnos_format != "ascii" && uo.ichnos_format != "binary")
+                        throw std::runtime_error(
+                            "Output.Ichnos_format must be either ascii or binary.");
+                    if (uo.ichnos_points_per_cell != 1 && uo.ichnos_points_per_cell != 8)
+                        throw std::runtime_error(
+                            "Output.Ichnos_points_per_cell must be either 1 or 8.");
+                    if (uo.ichnos_face_mode != "fine" && uo.ichnos_face_mode != "coarse")
+                        throw std::runtime_error(
+                            "Output.Ichnos_face_mode must be either fine or coarse.");
                 }
 
                 { //Misc

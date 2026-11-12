@@ -54,6 +54,10 @@
 #include <limits>
 #include <iomanip>
 #include <sstream>
+#include <array>
+#include <map>
+#include <set>
+#include <unordered_map>
 
 #include "npsat_flow/flow_input.h"
 #include "npsat_flow/time_step_tracking.h"
@@ -161,6 +165,9 @@ private:
     void build_and_write_vface_rt0_per_step(const std::string &prefix,
           TrilinosWrappers::MPI::Vector &vface_global,
           const bool coarse_dominated) const;
+
+    // Save a steady-state velocity cloud and cell graph for redist/Ichnos.
+    void save_ichnos_data(const std::string &prefix) const;
 
     // Methods to print the output data
     void write_well_exchange_identity_csv_mpi(const std::string &prefix) const;
@@ -305,6 +312,7 @@ NPSAT_FLOW<dim>::NPSAT_FLOW(const unsigned int degree, const npsat_flow::user_op
 #include "npsat_flow/main_class_impl/npsat_flow_setup.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_checkpoint.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_write_trace.impl.h"
+#include "npsat_flow/main_class_impl/npsat_flow_write_ichnos.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_assemble.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_solve.impl.h"
 #include "npsat_flow/main_class_impl/npsat_flow_post.impl.h"
@@ -906,6 +914,9 @@ void NPSAT_FLOW<dim>::run() {
             write_wellbore_segments_csv_mpi(out_prefix);
             MPI_Barrier(mpi_communicator);
             output_results(out_prefix);
+            MPI_Barrier(mpi_communicator);
+
+            save_ichnos_data(out_prefix);
             MPI_Barrier(mpi_communicator);
 
             // Save data for trace

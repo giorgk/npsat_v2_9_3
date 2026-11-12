@@ -160,6 +160,10 @@ namespace npsat_flow {
         bool save_fine_velocities = true;
         bool save_coarse_velocities = false;
         unsigned int velocity_write_batch_size = 16;
+        bool save_ichnos_data = false;
+        std::string ichnos_format = "ascii";
+        unsigned int ichnos_points_per_cell = 1;
+        std::string ichnos_face_mode = "fine";
         bool print_vtk = false;
         bool print_water_table = false;
         bool print_q_to_vtu = false;
