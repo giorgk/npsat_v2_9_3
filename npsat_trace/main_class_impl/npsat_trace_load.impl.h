@@ -384,7 +384,14 @@ void NPSAT_TRACE<dim>::load_velocity_io_mapping() {
 
             const auto gid = static_cast<dealii::types::global_dof_index>(gid64);
 
-            AssertThrow(sgn8 == 1 || sgn8 == -1, ExcMessage("Invalid RT0 face sign in mapping file."));
+            AssertThrow(
+                sgn8 == 1 || sgn8 == -1,
+                ExcMessage("Invalid RT0 face sign " +
+                           std::to_string(static_cast<int>(sgn8)) +
+                           " in mapping file " + filename +
+                           ", cell record " + std::to_string(k) +
+                           " (CellId " + cid + "), face " +
+                           std::to_string(f) + "."));
 
             // Allowed flag combinations:
             //   0x0 : regular face / boundary

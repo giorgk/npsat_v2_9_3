@@ -20,9 +20,6 @@ void NPSAT_FLOW<dim>::save_velocity_io_mapping_once() const {
 
     pcout << "Saving velocity IO mapping (once): " << filename << std::endl;
 
-    std::ofstream out(filename, std::ios::binary);
-    AssertThrow(out.good(), ExcMessage("Could not open file for writing: " + filename));
-
     // ---------------- Header ----------------
     const std::uint64_t magic   = 0x4E50534154564D50ull; // "NPSATVMP" (arbitrary)
     const std::uint32_t version = 3;
@@ -32,22 +29,6 @@ void NPSAT_FLOW<dim>::save_velocity_io_mapping_once() const {
     const std::uint64_t n_global_dofs = dof_handler_flux.n_dofs();
     const std::uint64_t n_owned_dofs  = flux_locally_owned_dofs.n_elements();
     const std::uint64_t n_local_cells = triangulation.n_locally_owned_active_cells();
-
-    out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
-    out.write(reinterpret_cast<const char*>(&version), sizeof(version));
-    out.write(reinterpret_cast<const char*>(&dim_u32), sizeof(dim_u32));
-    out.write(reinterpret_cast<const char*>(&fpc_u32), sizeof(fpc_u32));
-    out.write(reinterpret_cast<const char*>(&n_global_dofs), sizeof(n_global_dofs));
-    out.write(reinterpret_cast<const char*>(&n_owned_dofs), sizeof(n_owned_dofs));
-    out.write(reinterpret_cast<const char*>(&n_local_cells), sizeof(n_local_cells));
-
-    // ---------------- Section A: owned DoF gid order ----------------
-    // This must match your per-step writing loop order exactly.
-    for (auto it = flux_locally_owned_dofs.begin(); it != flux_locally_owned_dofs.end(); ++it)
-    {
-        const std::uint64_t gid64 = static_cast<std::uint64_t>(*it);
-        out.write(reinterpret_cast<const char*>(&gid64), sizeof(gid64));
-    }
 
     // For writing the mapping, we want for each cell face:
     // sign = +1 if THIS cell is the canonical owner (writer) for that face_gid, else -1.
@@ -123,24 +104,73 @@ void NPSAT_FLOW<dim>::save_velocity_io_mapping_once() const {
     std::sort(recs.begin(), recs.end(),
               [](const CellRec &a, const CellRec &b){ return a.cid < b.cid; });
 
-    for (const auto &r : recs)
+    const unsigned int batch_size = uo.velocity_write_batch_size;
+    const unsigned int n_batches =
+        (n_proc + batch_size - 1) / batch_size;
+
+    pcout << "    Writing velocity mapping files in " << n_batches
+          << " batch(es), up to " << batch_size
+          << " MPI rank(s) per batch." << std::endl;
+
+    for (unsigned int batch = 0; batch < n_batches; ++batch)
     {
-        const std::uint16_t len = static_cast<std::uint16_t>(r.cid.size());
-        out.write(reinterpret_cast<const char*>(&len), sizeof(len));
-        out.write(r.cid.data(), static_cast<std::streamsize>(len));
+        const unsigned int first_rank = batch * batch_size;
+        const unsigned int last_rank =
+            std::min(n_proc, first_rank + batch_size);
 
-        for (unsigned int f = 0; f < faces_per_cell; ++f)
+        if (my_rank >= first_rank && my_rank < last_rank)
         {
-            const std::uint64_t gid64 = static_cast<std::uint64_t>(r.face_gid[f]);
-            out.write(reinterpret_cast<const char*>(&gid64), sizeof(gid64));
-            out.write(reinterpret_cast<const char*>(&r.sign[f]), sizeof(std::int8_t));
-            out.write(reinterpret_cast<const char*>(&r.flags[f]), sizeof(std::uint8_t));
-        }
-    }
+            std::ofstream out(filename, std::ios::binary);
+            AssertThrow(out.good(),
+                        ExcMessage("Could not open mapping file for writing: " + filename));
 
-    AssertThrow(out.good(), ExcMessage("Failed while writing mapping file: " + filename));
-    out.close();
-    MPI_Barrier(mpi_communicator);
+            out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+            out.write(reinterpret_cast<const char*>(&version), sizeof(version));
+            out.write(reinterpret_cast<const char*>(&dim_u32), sizeof(dim_u32));
+            out.write(reinterpret_cast<const char*>(&fpc_u32), sizeof(fpc_u32));
+            out.write(reinterpret_cast<const char*>(&n_global_dofs), sizeof(n_global_dofs));
+            out.write(reinterpret_cast<const char*>(&n_owned_dofs), sizeof(n_owned_dofs));
+            out.write(reinterpret_cast<const char*>(&n_local_cells), sizeof(n_local_cells));
+
+            // Section A: owned DoF gid order. This must match the per-step
+            // velocity-value writing loop order exactly.
+            for (auto it = flux_locally_owned_dofs.begin();
+                 it != flux_locally_owned_dofs.end(); ++it)
+            {
+                const std::uint64_t gid64 = static_cast<std::uint64_t>(*it);
+                out.write(reinterpret_cast<const char*>(&gid64), sizeof(gid64));
+            }
+
+            // Section B: CellId followed by face gid, sign, and flags.
+            for (const auto &r : recs)
+            {
+                const std::uint16_t len =
+                    static_cast<std::uint16_t>(r.cid.size());
+                out.write(reinterpret_cast<const char*>(&len), sizeof(len));
+                out.write(r.cid.data(), static_cast<std::streamsize>(len));
+
+                for (unsigned int f = 0; f < faces_per_cell; ++f)
+                {
+                    const std::uint64_t gid64 =
+                        static_cast<std::uint64_t>(r.face_gid[f]);
+                    out.write(reinterpret_cast<const char*>(&gid64), sizeof(gid64));
+                    out.write(reinterpret_cast<const char*>(&r.sign[f]),
+                              sizeof(std::int8_t));
+                    out.write(reinterpret_cast<const char*>(&r.flags[f]),
+                              sizeof(std::uint8_t));
+                }
+            }
+
+            out.flush();
+            AssertThrow(out.good(),
+                        ExcMessage("Failed writing mapping file: " + filename));
+            out.close();
+            AssertThrow(!out.fail(),
+                        ExcMessage("Failed closing mapping file: " + filename));
+        }
+
+        MPI_Barrier(mpi_communicator);
+    }
 }
 
 template<int dim>
