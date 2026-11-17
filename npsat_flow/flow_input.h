@@ -35,7 +35,7 @@ namespace npsat_flow {
         : mpi_communicator(MPI_COMM_WORLD),
           pcout(std::cout, (Utilities::MPI::this_mpi_process(mpi_communicator) == 0))
     {
-        Version = "0.0.08";
+        Version = "0.0.10";
     }
 
     inline bool Input_ini::read_ini(int argc, char** argv) {
@@ -193,6 +193,7 @@ namespace npsat_flow {
             ("Output.Ichnos_format", po::value<std::string>()->default_value("ascii"), "redist/Ichnos export format: ascii or binary")
             ("Output.Ichnos_points_per_cell", po::value<unsigned int>()->default_value(1), "Number of velocity-cloud quadrature points per cell: 1 or 8")
             ("Output.Ichnos_face_mode", po::value<std::string>()->default_value("fine"), "Coarse-fine interface velocity source: fine or coarse")
+            ("Output.Ichnos_write_max_attempts", po::value<unsigned int>()->default_value(3), "Maximum write-and-readback attempts for each redist/Ichnos output batch")
             ("Output.Print_vtk", po::value<int>()->default_value(0), "Enable VTK output")
             ("Output.Print_water_table", po::value<int>()->default_value(0), "Write water table DAT output")
             ("Output.Print_q_to_vtu", po::value<int>()->default_value(0), "Write face flux cell data to VTU/VTK outputs")
@@ -433,6 +434,7 @@ namespace npsat_flow {
                     uo.ichnos_format = vm_cfg["Output.Ichnos_format"].as<std::string>();
                     uo.ichnos_points_per_cell = vm_cfg["Output.Ichnos_points_per_cell"].as<unsigned int>();
                     uo.ichnos_face_mode = vm_cfg["Output.Ichnos_face_mode"].as<std::string>();
+                    uo.ichnos_write_max_attempts = vm_cfg["Output.Ichnos_write_max_attempts"].as<unsigned int>();
                     std::transform(uo.ichnos_format.begin(), uo.ichnos_format.end(),
                                    uo.ichnos_format.begin(),
                                    [](const unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -475,6 +477,9 @@ namespace npsat_flow {
                     if (uo.ichnos_face_mode != "fine" && uo.ichnos_face_mode != "coarse")
                         throw std::runtime_error(
                             "Output.Ichnos_face_mode must be either fine or coarse.");
+                    if (uo.ichnos_write_max_attempts == 0)
+                        throw std::runtime_error(
+                            "Output.Ichnos_write_max_attempts must be at least 1.");
                 }
 
                 { //Misc
