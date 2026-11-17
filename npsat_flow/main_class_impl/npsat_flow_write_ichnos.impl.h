@@ -5,7 +5,10 @@
 #ifndef NPSAT_FLOW_WRITE_ICHNOS_IMPL_H
 #define NPSAT_FLOW_WRITE_ICHNOS_IMPL_H
 
+#include <cerrno>
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 namespace npsat_flow
 {
@@ -35,6 +38,21 @@ namespace npsat_flow
         char extra = 0;
         input.read(&extra, 1);
         return input.eof() && input.gcount() == 0;
+    }
+
+    inline void report_ichnos_file_error(const unsigned int rank,
+                                         const std::string &action,
+                                         const std::string &filename,
+                                         const int error_number)
+    {
+        std::cerr << "    Rank " << rank << ' ' << action << ' '
+                  << filename;
+        if (error_number != 0)
+            std::cerr << " (errno " << error_number << ": "
+                      << std::strerror(error_number) << ')';
+        else
+            std::cerr << " (no operating-system error code was reported)";
+        std::cerr << std::endl;
     }
 }
 
@@ -336,13 +354,16 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
     const auto close_output =
         [&](std::ofstream &output, const std::string &name) -> bool
         {
+            errno = 0;
             output.flush();
             const bool flushed = output.good();
             output.close();
             if (!flushed || output.fail())
             {
-                std::cerr << "Processor " << my_rank
-                          << " failed while closing " << name << std::endl;
+                const int error_number = errno;
+                npsat_flow::report_ichnos_file_error(
+                    my_rank, "failed while flushing or closing", name,
+                    error_number);
                 return false;
             }
             return true;
@@ -350,12 +371,15 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
 
     const auto write_ascii_files = [&]() -> bool
     {
+        errno = 0;
         std::ofstream velocity_out(velocity_name.c_str(),
                                    std::ios::out | std::ios::trunc);
         if (!velocity_out.good())
         {
-            std::cerr << "Processor " << my_rank << " could not open "
-                      << velocity_name << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", velocity_name,
+                error_number);
             return false;
         }
         for (typename std::vector<VelocityRecord>::const_iterator rec =
@@ -365,12 +389,15 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
         if (!close_output(velocity_out, velocity_name))
             return false;
 
+        errno = 0;
         std::ofstream graph_out(graph_name.c_str(),
                                 std::ios::out | std::ios::trunc);
         if (!graph_out.good())
         {
-            std::cerr << "Processor " << my_rank << " could not open "
-                      << graph_name << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", graph_name,
+                error_number);
             return false;
         }
         for (typename std::vector<GraphRecord>::const_iterator rec =
@@ -382,12 +409,14 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
 
     const auto verify_ascii_files = [&]() -> bool
     {
+        errno = 0;
         std::ifstream velocity_in(velocity_name.c_str());
         if (!velocity_in.good())
         {
-            std::cerr << "Processor " << my_rank
-                      << " could not reopen " << velocity_name
-                      << " for verification" << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", velocity_name,
+                error_number);
             return false;
         }
         std::string line;
@@ -409,12 +438,14 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
         }
         velocity_in.close();
 
+        errno = 0;
         std::ifstream graph_in(graph_name.c_str());
         if (!graph_in.good())
         {
-            std::cerr << "Processor " << my_rank
-                      << " could not reopen " << graph_name
-                      << " for verification" << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", graph_name,
+                error_number);
             return false;
         }
         for (std::size_t i = 0; i < graph_records.size(); ++i)
@@ -438,13 +469,16 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
 
     const auto write_binary_files = [&]() -> bool
     {
+        errno = 0;
         std::ofstream velocity_out(velocity_name.c_str(),
                                    std::ios::out | std::ios::binary |
                                        std::ios::trunc);
         if (!velocity_out.good())
         {
-            std::cerr << "Processor " << my_rank << " could not open "
-                      << velocity_name << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", velocity_name,
+                error_number);
             return false;
         }
         const char velocity_magic[8] = {'N','P','S','I','V','L','1','\0'};
@@ -473,13 +507,16 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
         if (!close_output(velocity_out, velocity_name))
             return false;
 
+        errno = 0;
         std::ofstream graph_out(graph_name.c_str(),
                                 std::ios::out | std::ios::binary |
                                     std::ios::trunc);
         if (!graph_out.good())
         {
-            std::cerr << "Processor " << my_rank << " could not open "
-                      << graph_name << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", graph_name,
+                error_number);
             return false;
         }
         const char graph_magic[8] = {'N','P','S','I','G','R','1','\0'};
@@ -509,12 +546,14 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
 
     const auto verify_binary_files = [&]() -> bool
     {
+        errno = 0;
         std::ifstream velocity_in(velocity_name.c_str(), std::ios::binary);
         if (!velocity_in.good())
         {
-            std::cerr << "Processor " << my_rank
-                      << " could not reopen " << velocity_name
-                      << " for verification" << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", velocity_name,
+                error_number);
             return false;
         }
         char magic[8] = {0,0,0,0,0,0,0,0};
@@ -588,12 +627,14 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
         }
         velocity_in.close();
 
+        errno = 0;
         std::ifstream graph_in(graph_name.c_str(), std::ios::binary);
         if (!graph_in.good())
         {
-            std::cerr << "Processor " << my_rank
-                      << " could not reopen " << graph_name
-                      << " for verification" << std::endl;
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", graph_name,
+                error_number);
             return false;
         }
         const char expected_graph_magic[8] =
@@ -697,10 +738,18 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
             batch_verified = batch_failure == 0;
 
             if (!batch_verified && attempt < max_write_attempts)
+            {
                 pcout << "Redist/Ichnos batch " << batch
                       << " failed write verification on attempt "
                       << attempt << " of " << max_write_attempts
-                      << "; rewriting the batch." << std::endl;
+                      << "; waiting "
+                      << uo.ichnos_write_retry_delay_seconds
+                      << " second(s) before rewriting the batch."
+                      << std::endl;
+                if (uo.ichnos_write_retry_delay_seconds > 0)
+                    std::this_thread::sleep_for(std::chrono::seconds(
+                        uo.ichnos_write_retry_delay_seconds));
+            }
             MPI_Barrier(mpi_communicator);
         }
 
