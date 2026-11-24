@@ -199,6 +199,13 @@ namespace npsat_trace {
             std::array<unsigned int, 6> &counts) const;
 
         void clear();
+        // Unclamped inverse for capture geometry and cell-exit localization.
+        bool capture_reference_point(const Point<dim> &p, Point<dim> &r) const {
+            return compute_reference_point(p, r);
+        }
+        Point<dim> capture_physical_point(const Point<dim> &r01) const {
+            return map_reference_point_to_physical(r01, true);
+        }
         void get_clamped_ref_coords(const Point<dim> &p, Point<dim> &p_ref);
         void compute_velocity_at_particle(const Point<dim> &x_phys, const Point<dim> &x_ref,
             const VelocityInterpolationScheme scheme, Tensor<1,dim> &u_phys, double &vmag_out) const;

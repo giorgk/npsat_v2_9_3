@@ -5,6 +5,10 @@
 #include <chrono>
 #include <iomanip>
 #include <queue>
+#include <random>
+#include <functional>
+#include "npsat_trace/well_routing.h"
+#include "npsat_trace/well_capture.h"
 
 #include <deal.II/base/mpi.h>
 #include <deal.II/distributed/tria.h>
@@ -68,7 +72,10 @@ private:
   npsat_trace::CellVelocityCacheRT0Split3D<dim> & get_or_build_cell_cache(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
     std::ofstream &dbg_cell_list);
-  npsat_trace::WellBoreTraceResults<dim> well_bore_flow_trace(const typename DoFHandler<dim>::active_cell_iterator &current_cell, const Point<dim> &x_in) const;
+  npsat_trace::WellBoreTraceResults<dim> well_bore_flow_trace(const typename DoFHandler<dim>::active_cell_iterator &current_cell, const Point<dim> &x_in, double captured_well = -1.0, bool allow_initial_capture = true) const;
+  npsat_trace::WellCaptureModel &get_or_build_well_capture(
+    const typename DoFHandler<dim>::active_cell_iterator &cell,
+    npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity);
   npsat_trace::CellTrajectoryAtlas<dim> &get_or_build_cell_atlas(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache,
@@ -107,6 +114,8 @@ private:
   std::vector<CellId> slot_cellid;
   std::vector<npsat_trace::CellVelocityCacheRT0Split3D<dim>> all_cells_cache;
   std::vector<bool> all_cells_cache_valid;
+  std::unordered_map<unsigned int, npsat_trace::WellCaptureModel> well_capture_cache;
+  unsigned int well_capture_warnings = 0;
   std::vector<npsat_trace::CellTrajectoryAtlas<dim> > all_cell_atlases;
   std::vector<bool> all_cell_atlas_valid;
   std::vector<unsigned int> all_cell_atlas_flow_step;
@@ -151,6 +160,7 @@ NPSAT_TRACE<dim>::NPSAT_TRACE(const npsat_trace::Trace_options &topt_in)
 
 #include "npsat_trace/main_class_impl/npsat_trace_load.impl.h"
 #include "npsat_trace/main_class_impl/npsat_trace_main.impl.h"
+#include "npsat_trace/main_class_impl/npsat_trace_capture.impl.h"
 #include "npsat_trace/main_class_impl/npsat_trace_point.impl.h"
 #include "npsat_trace/main_class_impl/npsat_trace_atlas.impl.h"
 

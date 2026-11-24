@@ -41,6 +41,7 @@ void NPSAT_TRACE<dim>::distribute_particles(const std::vector<npsat_trace::Parti
             pr[npsat_trace::pBBoxMaxY] = pr[npsat_trace::pBBoxMinY];
             pr[npsat_trace::pBBoxMaxZ] = pr[npsat_trace::pBBoxMinZ];
             pr[npsat_trace::pNoExpandCount] = 0.0;
+            pr[npsat_trace::pWellId] = -1.0;
             //pr[npsat_trace::pRf]  = double(s.rf);
             properties.push_back(std::move(pr));
         }
@@ -66,6 +67,8 @@ void NPSAT_TRACE<dim>::distribute_particles(const std::vector<npsat_trace::Parti
 
 template<int dim>
 void NPSAT_TRACE<dim>::load_data_step(const std::string & file_prefix, unsigned int step) {
+    well_capture_cache.clear();
+    well_capture_warnings = 0;
     // Load RT0 face-normal velocities for this step
     load_vface_rt0_values_step(file_prefix, step);
 
@@ -449,7 +452,7 @@ npsat_trace::CellVelocityCacheRT0Split3D<dim> &NPSAT_TRACE<dim>::get_or_build_ce
 template <int dim>
 npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
         const typename DoFHandler<dim>::active_cell_iterator &current_cell,
-        const Point<dim> &x_in) const {
+        const Point<dim> &x_in, double captured_well, bool allow_initial_capture) const {
     static_assert(dim == 3, "apply_well_kick_if_close currently assumes dim==3.");
 
     // Default result: no well interaction.
@@ -462,6 +465,8 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
     // If a later branch terminates without setting a more specific reason,
     // it is a normal well capture at the top/bottom of the screened interval.
     R.end_reason = npsat_trace::er_well_captured;
+    if (captured_well < 0.0 && !allow_initial_capture)
+        return R;
 
     // Small tolerance used to classify flows as positive, negative, or zero.
     // The well flow files have already been multiplied by trace direction when
@@ -504,17 +509,6 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
            return neigh;
     };
 
-    // Convert a scalar flow into a routing sign:
-    // +1 means upward wellbore movement, -1 means downward movement, and 0
-    // means there is no reliable axial drive.
-    auto flow_sign = [flow_eps](const double q) -> int {
-        if (q > flow_eps)
-            return 1;
-        if (q < -flow_eps)
-            return -1;
-        return 0;
-    };
-
     // Map a deal.II cell iterator into the compact per-rank "slot" used by
     // slot_cell_well_links.  The slot map was built from persistent CellId
     // strings when the trace-side mesh/mapping was loaded.
@@ -539,11 +533,8 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
     //    influence radius is evaluated for all attracting wells.  When several
     //    wells can capture, the selected well maximizes abs(Qe)/distance^2.
     //
-    // 2. require_threshold=false with required_well set: continued in-well
-    //    routing.  The particle has already been captured by one well, so no
-    //    lateral threshold is applied.  We only ask whether the same well in
-    //    the current cell still has Qe pulling into the well.  If Qe points
-    //    out to the aquifer, routing stops and normal aquifer tracing resumes.
+    // 2. Continuation follows the captured well without rechecking proximity
+    //    or exchange sign; axial throughflow can cross any exchange segment.
     auto find_link_and_flow =
         [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
             const Point<dim> &x,
@@ -599,14 +590,9 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
                 const double ry = x[1] - L.wy;
                 const double d  = std::sqrt(rx*rx + ry*ry);
 
-                // Continuation mode: no influence radius is used.  A captured
-                // particle keeps moving vertically through this same well while
-                // Qe continues to pull from aquifer into the well.  If Qe is
-                // zero or points from well to aquifer, the particle exits
-                // wellbore routing in this cell.
+                // Already inside this well: exchange sign only controls the
+                // aquifer outlet probability, not eligibility for axial routing.
                 if (required_well != any_well && !require_threshold) {
-                    if (F.Qe >= -flow_eps)
-                        return false;
                     bestL = &L;
                     bestF = F;
                     return true;
@@ -697,59 +683,21 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
             return false;
     };
 
-    // Decide whether a captured particle should move to the segment above or
-    // below.  Qwbf_bot and Qwbf_top are vertical wellbore flows at the bottom
-    // and top of the current segment after direction correction.
-    auto axial_direction = [&](const npsat_trace::CellWellLink &L,
-                               const npsat_trace::WellFlowRecord &F,
-                               const Point<dim> &x,
-                               int &end_reason) -> int {
-
-        const int bot_s = flow_sign(F.Qwbf_bot);
-        const int top_s = flow_sign(F.Qwbf_top);
-
-        // Same nonzero sign at both ends means the whole segment is routed in
-        // one axial direction.  A zero at one end inherits the nonzero end.
-        if (bot_s != 0 && bot_s == top_s)
-            return bot_s;
-        if (bot_s != 0 && top_s == 0)
-            return bot_s;
-        if (bot_s == 0 && top_s != 0)
-            return top_s;
-
-        // Bottom upward and top downward means both axial flows point toward
-        // this segment while Qe is also pulling into the well.  That is a local
-        // mass-balance inconsistency for routing, so terminate with a diagnostic
-        // flag instead of making an arbitrary move.
-        if (bot_s > 0 && top_s < 0) {
-            end_reason = npsat_trace::er_well_mass_balance;
-            return 0;
-        }
-
-        // Bottom downward and top upward means axial flows leave the segment on
-        // both ends.  Use a linear interpolation at the particle's z to choose
-        // which side of the internal divide the particle belongs to.
-        if (bot_s < 0 && top_s > 0) {
-            const double seg_bot = L.w_zbot;
-            const double seg_top = L.w_zbot + L.sl;
-            const double denom = seg_top - seg_bot;
-            const double alpha = (std::abs(denom) > 0.0)
-                ? npsat_trace::clamp_((x[2] - seg_bot) / denom, 0.0, 1.0)
-                : 0.5;
-            const double q_interp = F.Qwbf_bot + alpha * (F.Qwbf_top - F.Qwbf_bot);
-            return flow_sign(q_interp);
-        }
-
-        return 0;
-    };
-
     // Initial capture attempt from the current aquifer cell.  If no well can
     // capture the particle, return the default result and the caller will
     // continue normal velocity-based tracing.
     const npsat_trace::CellWellLink *L = nullptr;
     npsat_trace::WellFlowRecord F{};
-    if (!find_link_and_flow(current_cell, x_in, any_well, true, L, F))
+    const bool continuing = captured_well >= 0.0;
+    const std::uint32_t requested = continuing
+        ? static_cast<std::uint32_t>(captured_well) : any_well;
+    if (!find_link_and_flow(current_cell, x_in, requested, !continuing, L, F)) {
+        if (continuing) {
+            R.terminate = true;
+            R.end_reason = npsat_trace::er_well_mass_balance;
+        }
         return R;
+    }
 
     // Once captured, follow the same well vertically through adjacent cells.
     // This routing is instantaneous: x/y are preserved and no particle time or
@@ -773,41 +721,45 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
         if (!cell->is_locally_owned()) {
             R.new_pos = x;
             R.new_cell = cell;
+            R.well_id = well_id;
             return R;
         }
 
-        // In the current cell, continue only if this same well still pulls the
-        // particle from aquifer into well (Qe < 0).  If Qe points toward the
-        // aquifer, the particle leaves well routing and resumes normal tracing.
+        // Missing connectivity after capture is a routing error, not release.
         if (!find_link_and_flow(cell, x, well_id, false, L, F)) {
             R.new_pos = x;
             R.new_cell = cell;
+            R.terminate = true;
+            R.end_reason = npsat_trace::er_well_mass_balance;
             return R;
         }
 
-        // Determine the next vertical direction inside the captured well
-        // segment, or identify a mass-balance/capture stop condition.
-        int end_reason = npsat_trace::er_well_captured;
-        const int move_sign = axial_direction(*L, F, x, end_reason);
-
-        // Routing inconsistency: terminate and report the mass-balance flag.
-        if (end_reason == npsat_trace::er_well_mass_balance) {
+        // Reproducible spatial sampling, independent of MPI ownership/order.
+        // Each segment has its own sample; no persistent random state is needed.
+        std::seed_seq seed{
+            static_cast<unsigned int>(std::hash<double>{}(x[0])),
+            static_cast<unsigned int>(std::hash<double>{}(x[1])),
+            static_cast<unsigned int>(std::hash<double>{}(x[2])),
+            static_cast<unsigned int>(std::hash<double>{}(L->w_zbot)),
+            static_cast<unsigned int>(well_id)};
+        std::mt19937 generator(seed);
+        const double sample = std::generate_canonical<double, 53>(generator);
+        const npsat_trace::WellRoute route = npsat_trace::select_well_route(
+            F.Qe, F.Qwbf_bot, F.Qwbf_top, sample);
+        if (route == npsat_trace::WellRoute::invalid ||
+            route == npsat_trace::WellRoute::stagnant ||
+            route == npsat_trace::WellRoute::aquifer) {
             R.new_pos = x;
             R.new_cell = cell;
-            R.terminate = true;
-            R.end_reason = end_reason;
+            R.terminate = route == npsat_trace::WellRoute::invalid;
+            if (R.terminate)
+                R.end_reason = npsat_trace::er_well_mass_balance;
+            R.stagnant = route == npsat_trace::WellRoute::stagnant;
+            if (R.stagnant)
+                R.well_id = well_id;
             return R;
         }
-
-        // No usable axial drive: keep the particle at its current x/y/z and
-        // classify it as captured by the well.
-        if (move_sign == 0) {
-            R.new_pos = x;
-            R.new_cell = cell;
-            R.terminate = true;
-            R.end_reason = npsat_trace::er_well_captured;
-            return R;
-        }
+        const int move_sign = route == npsat_trace::WellRoute::up ? 1 : -1;
 
         const bool to_top = move_sign > 0;
         const unsigned int face = to_top ? 5u : 4u;
@@ -839,13 +791,16 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
         // particle is not snapped laterally to the well axis.
         x[2] = to_top ? (seg_top + dz_nudge) : (seg_bot - dz_nudge);
 
-        // Boundary or screen end means the route cannot continue to another
-        // screened cell, so terminate as well captured.
+        // Only an upward outlet at the screen top represents pumped discharge.
+        // The flow exporter assumes a closed well bottom; other broken axial
+        // connections must not be silently classified as pumping.
         if (at_screen_end || cell->at_boundary(face)) {
             R.new_pos = x;
             R.new_cell = cell;
             R.terminate = true;
-            R.end_reason = npsat_trace::er_well_captured;
+            R.end_reason = (to_top && at_screen_end)
+                ? npsat_trace::er_well_captured
+                : npsat_trace::er_well_mass_balance;
             return R;
         }
 

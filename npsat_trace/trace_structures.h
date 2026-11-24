@@ -135,6 +135,7 @@ namespace npsat_trace {
         pBBoxMaxY,
         pBBoxMaxZ,
         pNoExpandCount,
+        pWellId, // -1 in aquifer; captured well index across MPI transfers
         n_particle_props
     };
 
@@ -253,6 +254,8 @@ namespace npsat_trace {
     template<int dim>
     struct WellBoreTraceResults
     {
+        double well_id = -1.0;
+        bool stagnant = false;
         bool terminate;
         int end_reason;
         typename dealii::DoFHandler<dim>::active_cell_iterator new_cell;

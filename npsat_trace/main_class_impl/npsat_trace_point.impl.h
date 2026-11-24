@@ -6,6 +6,8 @@
 
 template <int dim>
 void NPSAT_TRACE<dim>::run_point_tracing() {
+  const bool flux_capture = topt.sim_opt.velocity_interpolation ==
+      npsat_trace::VelocityInterpolationScheme::coarse_rt;
   //std::cout << "I'm rank " << my_rank << " out of " << n_proc << std::endl;
 
   load_triangulation();
@@ -129,7 +131,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
           if (!current_cell->is_locally_owned()) {
             // This particle is not done for the step (it still has dt_remaining),
             // but we cannot progress it here.
-            if (props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps)
+            if (props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps || props[npsat_trace::pWellId] >= 0.0)
               ++not_done_local;
 
             ++particle;
@@ -137,7 +139,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
           }
 
           double &dt_remaining = props[npsat_trace::pDtRemaining];
-          if (dt_remaining <= topt.sim_opt.dt_eps){
+          if (dt_remaining <= topt.sim_opt.dt_eps && props[npsat_trace::pWellId] < 0.0){
             // This particle already finished this step on this rank
             props[npsat_trace::pState] = 2.0;
             ++particle;
@@ -172,7 +174,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
           double vmag = 0.0;
 
           // Trace this particle until walks for time_step_size or hits ghost or dead end
-          while (dt_remaining > topt.sim_opt.dt_eps) {
+          while (dt_remaining > topt.sim_opt.dt_eps || props[npsat_trace::pWellId] >= 0.0) {
 
             if (streamline_steps >= topt.sim_opt.n_max_streamline_steps) {
               npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], Eid, Sid, npsat_trace::MAX_ITER);
@@ -195,10 +197,26 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             auto &cached_cell = get_or_build_cell_cache(current_cell, dbg_cell_list);
 
             const Point<dim> x = particle->get_location();
+            npsat_trace::WellCaptureModel *capture_model = nullptr;
+            if (flux_capture) {
+              const unsigned int slot = current_cell->user_index();
+              if (slot < slot_cell_well_links.size() && !slot_cell_well_links[slot].empty()) {
+                capture_model = &get_or_build_well_capture(current_cell, cached_cell);
+                const bool above_water_table = slot < slot_water_table_elevation.size() &&
+                    std::isfinite(slot_water_table_elevation[slot]) &&
+                    x[dim-1] > slot_water_table_elevation[slot] + 1.e-10;
+                if (props[npsat_trace::pWellId] < 0.0 && !above_water_table) {
+                  const int selected = capture_model->at(npsat_trace::capture_point(cached_cell, x));
+                  if (selected >= 0)
+                    props[npsat_trace::pWellId] = capture_model->wells[selected].id;
+                }
+              }
+            }
 
             // --- WELL-BORE ROUTING (before velocity eval) ---
             {
-              const auto wb = this->well_bore_flow_trace(current_cell, x);
+              const auto wb = this->well_bore_flow_trace(current_cell, x, props[npsat_trace::pWellId], !flux_capture);
+              props[npsat_trace::pWellId] = wb.well_id;
               if (wb.terminate) {
                 // Keep wb.new_pos even if outside (per your rule) and terminate tracking
                 particle->set_location(wb.new_pos);
@@ -210,6 +228,14 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
                 break;
               }
 
+              if (wb.stagnant) {
+                particle->set_location(wb.new_pos);
+                particle_age += dt_remaining;
+                dt_remaining = 0.0;
+                props[npsat_trace::pState] = 2.0;
+                break;
+              }
+
               // If the well moved the particle (position and/or cell), apply it and restart loop iteration
               // so caches/velocity are computed in the correct cell at the new position.
               if (wb.new_cell != current_cell || wb.new_pos != x) {
@@ -218,7 +244,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
 
                 // If we jumped into a ghost cell, stop local tracing (migration will handle it)
                 if (!current_cell->is_locally_owned()){
-                  if (dt_remaining < topt.sim_opt.dt_eps)
+                  if (dt_remaining < topt.sim_opt.dt_eps && props[npsat_trace::pWellId] < 0.0)
                     props[npsat_trace::pState] = 2.0;
                   break;
                 }
@@ -226,6 +252,11 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
                 // (Avoid using cached_cell from the old cell.)
                 continue;
               }
+            }
+
+            if (dt_remaining <= topt.sim_opt.dt_eps) {
+              props[npsat_trace::pState] = 2.0;
+              break;
             }
 
             Tensor<1,dim> u;
@@ -293,8 +324,52 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             }
 
             // move the particle
-            const Point<dim> x_proposed = x + ds * dir * topt.sim_opt.direction;
-            const double dt_move = ds / vmag;
+            Point<dim> x_proposed = x + ds * dir * topt.sim_opt.direction;
+            double dt_move = ds / vmag;
+            double inside_fraction = 1.0;
+            if (flux_capture) {
+              const double exit = npsat_trace::capture_cell_fraction(cached_cell, x, x_proposed);
+              if (exit < 1.0) {
+                // End just across the face so existing cell lookup/migration
+                // can continue. Never skip the interior of the next cell.
+                const double shortened = std::min(1.0, exit + 1.e-8 * current_cell->diameter() / ds);
+                x_proposed = x + shortened * (x_proposed - x);
+                dt_move *= shortened;
+                inside_fraction = exit / shortened;
+              }
+            }
+
+            if (capture_model && !capture_model->wells.empty()) {
+              // Capture must precede age/water-table termination, not jump
+              // across either event. Keep their existing handling below.
+              double stop_fraction = 1.0;
+              if (topt.sim_opt.max_age >= 0.0 && particle_age + dt_move >= topt.sim_opt.max_age)
+                stop_fraction = std::min(stop_fraction,
+                    std::max(0.0, (topt.sim_opt.max_age-particle_age)/dt_move));
+              const unsigned int slot = current_cell->user_index();
+              if (slot < slot_water_table_elevation.size() && std::isfinite(slot_water_table_elevation[slot])) {
+                const double z0=x[dim-1]-slot_water_table_elevation[slot];
+                const double z1=x_proposed[dim-1]-slot_water_table_elevation[slot];
+                if (z0>1.e-10 || (z0<=1.e-10 && z1>=-1.e-10 && z1!=z0))
+                  stop_fraction = std::min(stop_fraction, std::abs(z1-z0)>1.e-10
+                      ? npsat_trace::clamp_(-z0/(z1-z0),0.0,1.0) : 0.0);
+              }
+              const double limit = std::min(inside_fraction,stop_fraction);
+              const auto hit = npsat_trace::capture_physical_segment(*capture_model,cached_cell,
+                  x,x+limit*(x_proposed-x));
+              const double fraction = limit*hit.fraction;
+              if (hit.well>=0 && (fraction<stop_fraction || stop_fraction==1.0)) {
+                const auto entry = x+fraction*(x_proposed-x);
+                particle->set_location(entry);
+                npsat_trace::update_streamline_bbox<dim>(props,entry);
+                particle_age += fraction*dt_move;
+                dt_remaining = std::max(0.0,dt_remaining-fraction*dt_move);
+                props[npsat_trace::pWellId] = capture_model->wells[hit.well].id;
+                props[npsat_trace::pPid] += 1.0;
+                npsat_trace::write_sample(sl_out,props[npsat_trace::pPid],Eid,Sid,entry,vmag);
+                continue; // finish the instantaneous well route in this step
+              }
+            }
 
             if (topt.sim_opt.max_age >= 0.0 && particle_age + dt_move > topt.sim_opt.max_age) {
               const double alpha_age = npsat_trace::clamp_((topt.sim_opt.max_age - particle_age) / dt_move, 0.0, 1.0);
@@ -410,7 +485,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             }
           }// while loop tracing a particle within a time step
           if (props[npsat_trace::pState] == 1.0 &&
-              props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps)
+              (props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps || props[npsat_trace::pWellId] >= 0.0))
             ++not_done_local;
           ++particle;
         }// While loop iterating particles
@@ -456,7 +531,8 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
 
             // Terminate only particles that have not completed the
             // current transient time step.
-            if (props[npsat_trace::pState] == 1.0 && props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps){
+            if (props[npsat_trace::pState] == 1.0 &&
+                (props[npsat_trace::pDtRemaining] > topt.sim_opt.dt_eps || props[npsat_trace::pWellId] >= 0.0)){
               npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], props[npsat_trace::pEid],
                 props[npsat_trace::pSid], npsat_trace::er_max_proc_exchanges);
 
