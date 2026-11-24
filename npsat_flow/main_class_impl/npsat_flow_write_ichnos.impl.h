@@ -5,6 +5,57 @@
 #ifndef NPSAT_FLOW_WRITE_ICHNOS_IMPL_H
 #define NPSAT_FLOW_WRITE_ICHNOS_IMPL_H
 
+#include <cerrno>
+#include <chrono>
+#include <cstring>
+#include <thread>
+
+namespace npsat_flow
+{
+    template <typename T>
+    bool read_ichnos_pod(std::ifstream &input, T &value)
+    {
+        input.read(reinterpret_cast<char *>(&value), sizeof(T));
+        return input.good();
+    }
+
+    inline bool read_ichnos_string(std::ifstream &input,
+                                   const std::string &expected)
+    {
+        std::uint32_t length = 0;
+        if (!read_ichnos_pod(input, length) ||
+            length != static_cast<std::uint32_t>(expected.size()))
+            return false;
+
+        std::string value(length, '\0');
+        if (length > 0)
+            input.read(&value[0], static_cast<std::streamsize>(length));
+        return input.good() && value == expected;
+    }
+
+    inline bool ichnos_at_binary_eof(std::ifstream &input)
+    {
+        char extra = 0;
+        input.read(&extra, 1);
+        return input.eof() && input.gcount() == 0;
+    }
+
+    inline void report_ichnos_file_error(const unsigned int rank,
+                                         const std::string &action,
+                                         const std::string &filename,
+                                         const int error_number)
+    {
+        std::cerr << "    Rank " << rank << ' ' << action << ' '
+                  << filename;
+        if (error_number != 0)
+            std::cerr << " (errno " << error_number << ": "
+                      << std::strerror(error_number) << ')';
+        else
+            std::cerr << " (no operating-system error code was reported)";
+        std::cerr << std::endl;
+    }
+}
+
 template <int dim>
 void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
 {
@@ -257,10 +308,402 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
 
     const std::string rank_string = Utilities::int_to_string(my_rank, 4);
     const std::string file_base = prefix + "_4redist_" + rank_string;
+    const std::string velocity_name =
+        file_base + (binary_output ? ".vel.bin" : ".vel");
+    const std::string graph_name =
+        file_base + (binary_output ? ".grph.bin" : ".grph");
+    const std::uint32_t format_version = 1;
+    const std::uint32_t dim_u32 = dim;
+    const std::uint32_t rank_u32 = my_rank;
+    const std::uint32_t nproc_u32 = n_proc;
+    const std::uint32_t points_u32 = uo.ichnos_points_per_cell;
+    const std::uint32_t face_mode_u32 = coarse_mode ? 1u : 0u;
+    const std::uint64_t n_cells =
+        static_cast<std::uint64_t>(graph_records.size());
+    const std::uint64_t n_points =
+        static_cast<std::uint64_t>(velocity_records.size());
+
+    const auto velocity_ascii_line =
+        [&](const VelocityRecord &rec) -> std::string
+        {
+            std::ostringstream line;
+            line << std::scientific << std::setprecision(16)
+                 << rec.point[0] << ' ' << rec.point[1] << ' '
+                 << rec.point[2] << ' ' << rec.velocity[0] << ' '
+                 << rec.velocity[1] << ' ' << rec.velocity[2] << ' '
+                 << my_rank << ' ' << rec.diameter << ' ' << rec.ratio
+                 << ' ' << rec.cell_id;
+            return line.str();
+        };
+
+    const auto graph_ascii_line =
+        [&](const GraphRecord &rec) -> std::string
+        {
+            std::ostringstream line;
+            line << std::scientific << std::setprecision(16)
+                 << rec.center[0] << ' ' << rec.center[1] << ' '
+                 << rec.center[2] << ' ' << rec.neighbors.size()
+                 << ' ' << rec.cell_id;
+            for (std::vector<std::string>::const_iterator neighbor =
+                     rec.neighbors.begin();
+                 neighbor != rec.neighbors.end(); ++neighbor)
+                line << ' ' << *neighbor;
+            return line.str();
+        };
+
+    const auto close_output =
+        [&](std::ofstream &output, const std::string &name) -> bool
+        {
+            errno = 0;
+            output.flush();
+            const bool flushed = output.good();
+            output.close();
+            if (!flushed || output.fail())
+            {
+                const int error_number = errno;
+                npsat_flow::report_ichnos_file_error(
+                    my_rank, "failed while flushing or closing", name,
+                    error_number);
+                return false;
+            }
+            return true;
+        };
+
+    const auto write_ascii_files = [&]() -> bool
+    {
+        errno = 0;
+        std::ofstream velocity_out(velocity_name.c_str(),
+                                   std::ios::out | std::ios::trunc);
+        if (!velocity_out.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", velocity_name,
+                error_number);
+            return false;
+        }
+        for (typename std::vector<VelocityRecord>::const_iterator rec =
+                 velocity_records.begin();
+             rec != velocity_records.end(); ++rec)
+            velocity_out << velocity_ascii_line(*rec) << '\n';
+        if (!close_output(velocity_out, velocity_name))
+            return false;
+
+        errno = 0;
+        std::ofstream graph_out(graph_name.c_str(),
+                                std::ios::out | std::ios::trunc);
+        if (!graph_out.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", graph_name,
+                error_number);
+            return false;
+        }
+        for (typename std::vector<GraphRecord>::const_iterator rec =
+                 graph_records.begin();
+             rec != graph_records.end(); ++rec)
+            graph_out << graph_ascii_line(*rec) << '\n';
+        return close_output(graph_out, graph_name);
+    };
+
+    const auto verify_ascii_files = [&]() -> bool
+    {
+        errno = 0;
+        std::ifstream velocity_in(velocity_name.c_str());
+        if (!velocity_in.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", velocity_name,
+                error_number);
+            return false;
+        }
+        std::string line;
+        for (std::size_t i = 0; i < velocity_records.size(); ++i)
+            if (!std::getline(velocity_in, line) ||
+                line != velocity_ascii_line(velocity_records[i]))
+            {
+                std::cerr << "Processor " << my_rank
+                          << " failed velocity readback at record " << i
+                          << " in " << velocity_name << std::endl;
+                return false;
+            }
+        if (std::getline(velocity_in, line))
+        {
+            std::cerr << "Processor " << my_rank
+                      << " found extra velocity data in "
+                      << velocity_name << std::endl;
+            return false;
+        }
+        velocity_in.close();
+
+        errno = 0;
+        std::ifstream graph_in(graph_name.c_str());
+        if (!graph_in.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", graph_name,
+                error_number);
+            return false;
+        }
+        for (std::size_t i = 0; i < graph_records.size(); ++i)
+            if (!std::getline(graph_in, line) ||
+                line != graph_ascii_line(graph_records[i]))
+            {
+                std::cerr << "Processor " << my_rank
+                          << " failed graph readback at record " << i
+                          << " in " << graph_name << std::endl;
+                return false;
+            }
+        if (std::getline(graph_in, line))
+        {
+            std::cerr << "Processor " << my_rank
+                      << " found extra graph data in " << graph_name
+                      << std::endl;
+            return false;
+        }
+        return true;
+    };
+
+    const auto write_binary_files = [&]() -> bool
+    {
+        errno = 0;
+        std::ofstream velocity_out(velocity_name.c_str(),
+                                   std::ios::out | std::ios::binary |
+                                       std::ios::trunc);
+        if (!velocity_out.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", velocity_name,
+                error_number);
+            return false;
+        }
+        const char velocity_magic[8] = {'N','P','S','I','V','L','1','\0'};
+        velocity_out.write(velocity_magic, 8);
+        npsat_flow::write_pod(velocity_out, format_version);
+        npsat_flow::write_pod(velocity_out, dim_u32);
+        npsat_flow::write_pod(velocity_out, rank_u32);
+        npsat_flow::write_pod(velocity_out, nproc_u32);
+        npsat_flow::write_pod(velocity_out, points_u32);
+        npsat_flow::write_pod(velocity_out, face_mode_u32);
+        npsat_flow::write_pod(velocity_out, n_cells);
+        npsat_flow::write_pod(velocity_out, n_points);
+        for (typename std::vector<VelocityRecord>::const_iterator rec =
+                 velocity_records.begin();
+             rec != velocity_records.end(); ++rec)
+        {
+            for (unsigned int d = 0; d < dim; ++d)
+                npsat_flow::write_pod(velocity_out, rec->point[d]);
+            for (unsigned int d = 0; d < dim; ++d)
+                npsat_flow::write_pod(velocity_out, rec->velocity[d]);
+            npsat_flow::write_pod(velocity_out, rank_u32);
+            npsat_flow::write_pod(velocity_out, rec->diameter);
+            npsat_flow::write_pod(velocity_out, rec->ratio);
+            npsat_flow::write_string(velocity_out, rec->cell_id);
+        }
+        if (!close_output(velocity_out, velocity_name))
+            return false;
+
+        errno = 0;
+        std::ofstream graph_out(graph_name.c_str(),
+                                std::ios::out | std::ios::binary |
+                                    std::ios::trunc);
+        if (!graph_out.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not open for writing", graph_name,
+                error_number);
+            return false;
+        }
+        const char graph_magic[8] = {'N','P','S','I','G','R','1','\0'};
+        graph_out.write(graph_magic, 8);
+        npsat_flow::write_pod(graph_out, format_version);
+        npsat_flow::write_pod(graph_out, dim_u32);
+        npsat_flow::write_pod(graph_out, rank_u32);
+        npsat_flow::write_pod(graph_out, nproc_u32);
+        npsat_flow::write_pod(graph_out, n_cells);
+        for (typename std::vector<GraphRecord>::const_iterator rec =
+                 graph_records.begin();
+             rec != graph_records.end(); ++rec)
+        {
+            for (unsigned int d = 0; d < dim; ++d)
+                npsat_flow::write_pod(graph_out, rec->center[d]);
+            const std::uint32_t n_neighbors =
+                static_cast<std::uint32_t>(rec->neighbors.size());
+            npsat_flow::write_pod(graph_out, n_neighbors);
+            npsat_flow::write_string(graph_out, rec->cell_id);
+            for (std::vector<std::string>::const_iterator neighbor =
+                     rec->neighbors.begin();
+                 neighbor != rec->neighbors.end(); ++neighbor)
+                npsat_flow::write_string(graph_out, *neighbor);
+        }
+        return close_output(graph_out, graph_name);
+    };
+
+    const auto verify_binary_files = [&]() -> bool
+    {
+        errno = 0;
+        std::ifstream velocity_in(velocity_name.c_str(), std::ios::binary);
+        if (!velocity_in.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", velocity_name,
+                error_number);
+            return false;
+        }
+        char magic[8] = {0,0,0,0,0,0,0,0};
+        const char expected_velocity_magic[8] =
+            {'N','P','S','I','V','L','1','\0'};
+        std::uint32_t version = 0, file_dim = 0, file_rank = 0;
+        std::uint32_t file_nproc = 0, file_points = 0, file_mode = 0;
+        std::uint64_t file_cells = 0, file_velocity_points = 0;
+        velocity_in.read(magic, 8);
+        if (!velocity_in.good() ||
+            std::memcmp(magic, expected_velocity_magic, 8) != 0 ||
+            !npsat_flow::read_ichnos_pod(velocity_in, version) ||
+            !npsat_flow::read_ichnos_pod(velocity_in, file_dim) ||
+            !npsat_flow::read_ichnos_pod(velocity_in, file_rank) ||
+            !npsat_flow::read_ichnos_pod(velocity_in, file_nproc) ||
+            !npsat_flow::read_ichnos_pod(velocity_in, file_points) ||
+            !npsat_flow::read_ichnos_pod(velocity_in, file_mode) ||
+            !npsat_flow::read_ichnos_pod(velocity_in, file_cells) ||
+            !npsat_flow::read_ichnos_pod(velocity_in,
+                                         file_velocity_points) ||
+            version != format_version || file_dim != dim_u32 ||
+            file_rank != rank_u32 || file_nproc != nproc_u32 ||
+            file_points != points_u32 || file_mode != face_mode_u32 ||
+            file_cells != n_cells || file_velocity_points != n_points)
+        {
+            std::cerr << "Processor " << my_rank
+                      << " failed velocity header readback for "
+                      << velocity_name << std::endl;
+            return false;
+        }
+
+        for (std::size_t i = 0; i < velocity_records.size(); ++i)
+        {
+            const VelocityRecord &expected = velocity_records[i];
+            double point[dim];
+            double velocity[dim];
+            std::uint32_t source_rank = 0;
+            double diameter = 0.0, ratio = 0.0;
+            bool valid = true;
+            for (unsigned int d = 0; d < dim; ++d)
+                valid = valid &&
+                    npsat_flow::read_ichnos_pod(velocity_in, point[d]);
+            for (unsigned int d = 0; d < dim; ++d)
+                valid = valid &&
+                    npsat_flow::read_ichnos_pod(velocity_in, velocity[d]);
+            valid = valid &&
+                    npsat_flow::read_ichnos_pod(velocity_in, source_rank) &&
+                    npsat_flow::read_ichnos_pod(velocity_in, diameter) &&
+                    npsat_flow::read_ichnos_pod(velocity_in, ratio) &&
+                    npsat_flow::read_ichnos_string(velocity_in,
+                                                   expected.cell_id);
+            for (unsigned int d = 0; valid && d < dim; ++d)
+                valid = point[d] == expected.point[d] &&
+                        velocity[d] == expected.velocity[d];
+            valid = valid && source_rank == rank_u32 &&
+                    diameter == expected.diameter && ratio == expected.ratio;
+            if (!valid)
+            {
+                std::cerr << "Processor " << my_rank
+                          << " failed velocity readback at record " << i
+                          << " in " << velocity_name << std::endl;
+                return false;
+            }
+        }
+        if (!npsat_flow::ichnos_at_binary_eof(velocity_in))
+        {
+            std::cerr << "Processor " << my_rank
+                      << " found extra velocity data in "
+                      << velocity_name << std::endl;
+            return false;
+        }
+        velocity_in.close();
+
+        errno = 0;
+        std::ifstream graph_in(graph_name.c_str(), std::ios::binary);
+        if (!graph_in.good())
+        {
+            const int error_number = errno;
+            npsat_flow::report_ichnos_file_error(
+                my_rank, "could not reopen for verification", graph_name,
+                error_number);
+            return false;
+        }
+        const char expected_graph_magic[8] =
+            {'N','P','S','I','G','R','1','\0'};
+        std::uint64_t file_graph_cells = 0;
+        graph_in.read(magic, 8);
+        if (!graph_in.good() ||
+            std::memcmp(magic, expected_graph_magic, 8) != 0 ||
+            !npsat_flow::read_ichnos_pod(graph_in, version) ||
+            !npsat_flow::read_ichnos_pod(graph_in, file_dim) ||
+            !npsat_flow::read_ichnos_pod(graph_in, file_rank) ||
+            !npsat_flow::read_ichnos_pod(graph_in, file_nproc) ||
+            !npsat_flow::read_ichnos_pod(graph_in, file_graph_cells) ||
+            version != format_version || file_dim != dim_u32 ||
+            file_rank != rank_u32 || file_nproc != nproc_u32 ||
+            file_graph_cells != n_cells)
+        {
+            std::cerr << "Processor " << my_rank
+                      << " failed graph header readback for "
+                      << graph_name << std::endl;
+            return false;
+        }
+
+        for (std::size_t i = 0; i < graph_records.size(); ++i)
+        {
+            const GraphRecord &expected = graph_records[i];
+            double center[dim];
+            std::uint32_t n_neighbors = 0;
+            bool valid = true;
+            for (unsigned int d = 0; d < dim; ++d)
+                valid = valid &&
+                    npsat_flow::read_ichnos_pod(graph_in, center[d]);
+            valid = valid &&
+                    npsat_flow::read_ichnos_pod(graph_in, n_neighbors) &&
+                    n_neighbors == expected.neighbors.size() &&
+                    npsat_flow::read_ichnos_string(graph_in,
+                                                   expected.cell_id);
+            for (std::size_t neighbor = 0;
+                 valid && neighbor < expected.neighbors.size(); ++neighbor)
+                valid = npsat_flow::read_ichnos_string(
+                    graph_in, expected.neighbors[neighbor]);
+            for (unsigned int d = 0; valid && d < dim; ++d)
+                valid = center[d] == expected.center[d];
+            if (!valid)
+            {
+                std::cerr << "Processor " << my_rank
+                          << " failed graph readback at record " << i
+                          << " in " << graph_name << std::endl;
+                return false;
+            }
+        }
+        if (!npsat_flow::ichnos_at_binary_eof(graph_in))
+        {
+            std::cerr << "Processor " << my_rank
+                      << " found extra graph data in " << graph_name
+                      << std::endl;
+            return false;
+        }
+        return true;
+    };
+
     const unsigned int batch_size = uo.velocity_write_batch_size;
     const unsigned int n_batches = (n_proc + batch_size - 1) / batch_size;
+    // A bounded retry prevents a permanent filesystem or permission error
+    // from leaving every MPI rank in an endless write loop.
+    const unsigned int max_write_attempts =
+        uo.ichnos_write_max_attempts;
 
-    pcout << "Writing steady-state redist/Ichnos "
+    pcout << "Writing and verifying steady-state redist/Ichnos "
           << uo.ichnos_format << " files with "
           << uo.ichnos_points_per_cell << " point(s) per cell and "
           << uo.ichnos_face_mode << "-face velocities." << std::endl;
@@ -269,120 +712,65 @@ void NPSAT_FLOW<dim>::save_ichnos_data(const std::string &prefix) const
     {
         const unsigned int first_rank = batch * batch_size;
         const unsigned int last_rank = std::min(n_proc, first_rank + batch_size);
+        const bool rank_in_batch =
+            my_rank >= first_rank && my_rank < last_rank;
+        bool batch_verified = false;
+        unsigned int attempt = 0;
 
-        if (my_rank >= first_rank && my_rank < last_rank)
+        while (!batch_verified && attempt < max_write_attempts)
         {
-            if (!binary_output)
+            ++attempt;
+            bool local_verified = true;
+            if (rank_in_batch)
             {
-                const std::string velocity_name = file_base + ".vel";
-                std::ofstream velocity_out(velocity_name.c_str());
-                AssertThrow(velocity_out.good(),
-                            ExcMessage("Could not open Ichnos velocity file: " + velocity_name));
-                velocity_out << std::scientific << std::setprecision(16);
-                for (const auto &rec : velocity_records)
-                {
-                    velocity_out << rec.point[0] << ' '
-                                 << rec.point[1] << ' '
-                                 << rec.point[2] << ' '
-                                 << rec.velocity[0] << ' '
-                                 << rec.velocity[1] << ' '
-                                 << rec.velocity[2] << ' '
-                                 << my_rank << ' '
-                                 << rec.diameter << ' '
-                                 << rec.ratio << ' '
-                                 << rec.cell_id << '\n';
-                }
-                AssertThrow(velocity_out.good(),
-                            ExcMessage("Failed writing Ichnos velocity file: " + velocity_name));
-
-                const std::string graph_name = file_base + ".grph";
-                std::ofstream graph_out(graph_name.c_str());
-                AssertThrow(graph_out.good(),
-                            ExcMessage("Could not open Ichnos graph file: " + graph_name));
-                graph_out << std::scientific << std::setprecision(16);
-                for (const auto &rec : graph_records)
-                {
-                    graph_out << rec.center[0] << ' '
-                              << rec.center[1] << ' '
-                              << rec.center[2] << ' '
-                              << rec.neighbors.size() << ' '
-                              << rec.cell_id;
-                    for (const auto &neighbor_id : rec.neighbors)
-                        graph_out << ' ' << neighbor_id;
-                    graph_out << '\n';
-                }
-                AssertThrow(graph_out.good(),
-                            ExcMessage("Failed writing Ichnos graph file: " + graph_name));
+                const bool written = binary_output
+                                         ? write_binary_files()
+                                         : write_ascii_files();
+                local_verified = written &&
+                    (binary_output ? verify_binary_files()
+                                   : verify_ascii_files());
             }
-            else
+
+            const int local_failure = local_verified ? 0 : 1;
+            int batch_failure = 0;
+            MPI_Allreduce(&local_failure, &batch_failure, 1, MPI_INT,
+                          MPI_MAX, mpi_communicator);
+            batch_verified = batch_failure == 0;
+
+            if (!batch_verified && attempt < max_write_attempts)
             {
-                const std::string velocity_name = file_base + ".vel.bin";
-                std::ofstream velocity_out(velocity_name.c_str(), std::ios::binary);
-                AssertThrow(velocity_out.good(),
-                            ExcMessage("Could not open binary Ichnos velocity file: " + velocity_name));
-                const char velocity_magic[8] = {'N','P','S','I','V','L','1','\0'};
-                velocity_out.write(velocity_magic, 8);
-                const std::uint32_t version = 1;
-                const std::uint32_t dim_u32 = dim;
-                const std::uint32_t rank_u32 = my_rank;
-                const std::uint32_t nproc_u32 = n_proc;
-                const std::uint32_t points_u32 = uo.ichnos_points_per_cell;
-                const std::uint32_t face_mode_u32 = coarse_mode ? 1u : 0u;
-                const std::uint64_t n_cells =
-                    static_cast<std::uint64_t>(graph_records.size());
-                const std::uint64_t n_points =
-                    static_cast<std::uint64_t>(velocity_records.size());
-                npsat_flow::write_pod(velocity_out, version);
-                npsat_flow::write_pod(velocity_out, dim_u32);
-                npsat_flow::write_pod(velocity_out, rank_u32);
-                npsat_flow::write_pod(velocity_out, nproc_u32);
-                npsat_flow::write_pod(velocity_out, points_u32);
-                npsat_flow::write_pod(velocity_out, face_mode_u32);
-                npsat_flow::write_pod(velocity_out, n_cells);
-                npsat_flow::write_pod(velocity_out, n_points);
-                for (const auto &rec : velocity_records)
-                {
-                    for (unsigned int d = 0; d < dim; ++d)
-                        npsat_flow::write_pod(velocity_out, rec.point[d]);
-                    for (unsigned int d = 0; d < dim; ++d)
-                        npsat_flow::write_pod(velocity_out, rec.velocity[d]);
-                    const std::uint32_t source_rank = my_rank;
-                    npsat_flow::write_pod(velocity_out, source_rank);
-                    npsat_flow::write_pod(velocity_out, rec.diameter);
-                    npsat_flow::write_pod(velocity_out, rec.ratio);
-                    npsat_flow::write_string(velocity_out, rec.cell_id);
-                }
-                AssertThrow(velocity_out.good(),
-                            ExcMessage("Failed writing binary Ichnos velocity file: " + velocity_name));
-
-                const std::string graph_name = file_base + ".grph.bin";
-                std::ofstream graph_out(graph_name.c_str(), std::ios::binary);
-                AssertThrow(graph_out.good(),
-                            ExcMessage("Could not open binary Ichnos graph file: " + graph_name));
-                const char graph_magic[8] = {'N','P','S','I','G','R','1','\0'};
-                graph_out.write(graph_magic, 8);
-                npsat_flow::write_pod(graph_out, version);
-                npsat_flow::write_pod(graph_out, dim_u32);
-                npsat_flow::write_pod(graph_out, rank_u32);
-                npsat_flow::write_pod(graph_out, nproc_u32);
-                npsat_flow::write_pod(graph_out, n_cells);
-                for (const auto &rec : graph_records)
-                {
-                    for (unsigned int d = 0; d < dim; ++d)
-                        npsat_flow::write_pod(graph_out, rec.center[d]);
-                    const std::uint32_t n_neighbors =
-                        static_cast<std::uint32_t>(rec.neighbors.size());
-                    npsat_flow::write_pod(graph_out, n_neighbors);
-                    npsat_flow::write_string(graph_out, rec.cell_id);
-                    for (const auto &neighbor_id : rec.neighbors)
-                        npsat_flow::write_string(graph_out, neighbor_id);
-                }
-                AssertThrow(graph_out.good(),
-                            ExcMessage("Failed writing binary Ichnos graph file: " + graph_name));
+                pcout << "Redist/Ichnos batch " << batch
+                      << " failed write verification on attempt "
+                      << attempt << " of " << max_write_attempts
+                      << "; waiting "
+                      << uo.ichnos_write_retry_delay_seconds
+                      << " second(s) before rewriting the batch."
+                      << std::endl;
+                if (uo.ichnos_write_retry_delay_seconds > 0)
+                    std::this_thread::sleep_for(std::chrono::seconds(
+                        uo.ichnos_write_retry_delay_seconds));
             }
+            MPI_Barrier(mpi_communicator);
         }
 
-        MPI_Barrier(mpi_communicator);
+        AssertThrow(batch_verified,
+                    ExcMessage("Redist/Ichnos file verification failed after " +
+                               Utilities::int_to_string(max_write_attempts) +
+                               " attempts for batch " +
+                               Utilities::int_to_string(batch) + "."));
+
+        if (rank_in_batch)
+        {
+            const char *attempt_word = attempt == 1 ? "attempt" : "attempts";
+            std::cout << "    Rank " << my_rank << " wrote and verified "
+                      << velocity_name << " after " << attempt << ' '
+                      << attempt_word << " (" << velocity_records.size()
+                      << " records)" << std::endl;
+            std::cout << "    Rank " << my_rank << " wrote and verified "
+                      << graph_name << " after " << attempt << ' '
+                      << attempt_word << " (" << graph_records.size()
+                      << " records)" << std::endl;
+        }
     }
 }
 

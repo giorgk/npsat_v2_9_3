@@ -164,6 +164,8 @@ namespace npsat_flow {
         std::string ichnos_format = "ascii";
         unsigned int ichnos_points_per_cell = 1;
         std::string ichnos_face_mode = "fine";
+        unsigned int ichnos_write_max_attempts = 3;
+        unsigned int ichnos_write_retry_delay_seconds = 10;
         bool print_vtk = false;
         bool print_water_table = false;
         bool print_q_to_vtu = false;
