@@ -54,7 +54,7 @@ void column_test(bool backward, bool pumping) {
         flow.Qe = sign * (pumping ? -25 : exchange[segment]);
         flow.Qwbf_bot = sign * (pumping ? 25 * segment : bottom[segment]);
         flow.Qwbf_top = sign * (pumping ? 25 * (segment + 1) : top[segment]);
-        tracer.flows_by_cell_well[{cell->active_cell_index(), 0}] = flow;
+        tracer.flows_by_cell_well[{cell->id().to_string(), 0}] = flow;
     }
     if (pumping && !backward) {
         for (const auto &cell : tracer.dof_handler_flux.active_cell_iterators()) {

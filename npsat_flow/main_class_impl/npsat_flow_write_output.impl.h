@@ -725,10 +725,10 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
         std::ofstream bout(binname.str(), std::ios::binary);
         AssertThrow(bout.good(), ExcMessage("Could not open: " + binname.str()));
 
-        const char magic[8] = {'P','W','F','L','O','W','v','1'};
+        const char magic[8] = {'P','W','F','L','O','W','v','2'};
         bout.write(magic, 8);
 
-        const std::uint32_t version = 1;
+        const std::uint32_t version = 2;
         const std::uint32_t step_u32 = static_cast<std::uint32_t>(time_tracking.file_step());
         npsat_flow::write_pod(bout, version);
         npsat_flow::write_pod(bout, step_u32);
@@ -738,10 +738,11 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
         const std::uint64_t nrec = static_cast<std::uint64_t>(recv_flat2.size());
         npsat_flow::write_pod(bout, nrec);
 
-        // Write records
+        // The messages have returned to their cell owner. Resolve the local
+        // active index here, before writing it across the flow/trace boundary.
         for (const auto &m : recv_flat2)
         {
-            npsat_flow::write_pod(bout, m.cell_id);
+            npsat_flow::write_string(bout, cellid_string_from_active_index(m.cell_id));
             npsat_flow::write_pod(bout, m.well_global_index);
             npsat_flow::write_pod(bout, m.Qe);
             npsat_flow::write_pod(bout, m.Qwbf_bot);
@@ -749,6 +750,7 @@ void NPSAT_FLOW<dim>::write_wellbore_segments_csv_mpi(const std::string &prefix)
         }
 
         bout.flush();
+        AssertThrow(bout.good(), ExcMessage("Write failed: " + binname.str()));
     }
     // MPI_Barrier(mpi_communicator);
     // std::cout << "Rank " << my_rank << "So far so good 6" << std::endl;

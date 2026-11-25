@@ -238,8 +238,9 @@ void NPSAT_TRACE<dim>::build_cell_atlas(
     }
 
     const unsigned int cell_slot = static_cast<unsigned int>(cell->user_index());
-    const std::uint64_t flow_cell_id = static_cast<std::uint64_t>(cell->active_cell_index());
-    if (cell_slot < slot_cell_well_links.size())
+    if (cell_slot < slot_cell_well_links.size() && !slot_cell_well_links[cell_slot].empty())
+    {
+        const std::string flow_cell_id = cell->id().to_string();
         for (unsigned int i = 0; i < slot_cell_well_links[cell_slot].size(); ++i)
         {
             const npsat_trace::CellWellLink &link = slot_cell_well_links[cell_slot][i];
@@ -256,6 +257,7 @@ void NPSAT_TRACE<dim>::build_cell_atlas(
                 atlas.add_well(well);
             }
         }
+    }
 
     std::uint32_t trajectory_id = 0;
     const Point<dim> cell_center = cell->center();

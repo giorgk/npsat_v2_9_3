@@ -33,7 +33,7 @@ namespace npsat_trace {
         mpi_communicator(MPI_COMM_WORLD),
         pcout(std::cout, Utilities::MPI::this_mpi_process(mpi_communicator) == 0)
     {
-        Version = "0.0.02";
+        Version = "0.0.03";
     }
 
     inline bool InputHandler::read_ini(int argc, char** argv)

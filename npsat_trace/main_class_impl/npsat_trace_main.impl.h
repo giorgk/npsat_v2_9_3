@@ -116,13 +116,16 @@ void NPSAT_TRACE<dim>::read_particle_well_flows_for_step(const std::string &pref
     if (!in.good())
         throw std::runtime_error("Could not open: " + binname.str());
 
-    // header magic[8] = {'P','W','F','L','O','W','v','1'}
     char magic[8];
     in.read(magic, 8);
     if (!in.good())
         throw std::runtime_error("Failed reading header: " + binname.str());
 
-    const char expect_magic[8] = {'P','W','F','L','O','W','v','1'};
+    if (std::memcmp(magic, "PWFLOWv1", 8) == 0)
+        throw std::runtime_error("Legacy particle-well-flow file uses active cell indices: " +
+                                 binname.str() + ". Regenerate the flow outputs with the updated npsat_v2.");
+
+    const char expect_magic[8] = {'P','W','F','L','O','W','v','2'};
     if (std::memcmp(magic, expect_magic, 8) != 0)
         throw std::runtime_error("Bad magic in: " + binname.str());
 
@@ -131,7 +134,7 @@ void NPSAT_TRACE<dim>::read_particle_well_flows_for_step(const std::string &pref
     npsat_trace::read_pod(in, version);
     npsat_trace::read_pod(in, step_u32);
 
-    if (version != 1)
+    if (version != 2)
         throw std::runtime_error("Unsupported particle-well-flow version in: " + binname.str());
     if (step_u32 != static_cast<std::uint32_t>(step))
         throw std::runtime_error("Step mismatch in flow file: expected " + std::to_string(step) +
@@ -146,14 +149,9 @@ void NPSAT_TRACE<dim>::read_particle_well_flows_for_step(const std::string &pref
     for (std::uint64_t i = 0; i < nrec; ++i) {
         npsat_trace::WellFlowRecord r;
 
-        // Matches npsat_v2 particle-well-flow v1 records:
-        // uint32 cell_id, uint32 well_global_index, double Qe, double Qwbf_bot,
-        // double Qwbf_top.
-        npsat_trace::read_pod(in, r.cell_id);
-
-        std::uint32_t wgid = 0;
-        npsat_trace::read_pod(in, wgid);
-        r.well_global_index = wgid;
+        // v2 stores a length-prefixed CellId, then the well index and flows.
+        npsat_trace::FlowKey key{npsat_trace::read_string(in), 0};
+        npsat_trace::read_pod(in, key.well_global_index);
 
         npsat_trace::read_pod(in, r.Qe);
         npsat_trace::read_pod(in, r.Qwbf_bot);
@@ -163,10 +161,11 @@ void NPSAT_TRACE<dim>::read_particle_well_flows_for_step(const std::string &pref
         r.Qwbf_bot *= topt.sim_opt.direction;
         r.Qwbf_top *= topt.sim_opt.direction;
 
-        const npsat_trace::FlowKey key{r.cell_id, r.well_global_index};
-        flows_by_cell_well.emplace(key, r);
+        if (!flows_by_cell_well.emplace(key, r).second)
+            throw std::runtime_error("Duplicate particle-well-flow record in " + binname.str() +
+                                     " for CellId " + key.cell_id + ", well " +
+                                     std::to_string(key.well_global_index));
     }
-    //imported_flow_step = step_u32;
 
     if (!in.good())
         throw std::runtime_error("Read failed (particle-well flows): " + binname.str());
@@ -508,18 +507,6 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
            return neigh;
     };
 
-    // Map a deal.II cell iterator into the compact per-rank "slot" used by
-    // slot_cell_well_links.  The slot map was built from persistent CellId
-    // strings when the trace-side mesh/mapping was loaded.
-    auto cell_slot = [&](const typename DoFHandler<dim>::active_cell_iterator &cell,
-                         unsigned int &slot) -> bool {
-        const auto it_slot = cellid_to_slot.find(cell->id().to_string());
-        if (it_slot == cellid_to_slot.end())
-            return false;
-        slot = it_slot->second;
-        return slot < slot_cell_well_links.size();
-    };
-
     // Select the well link and adjusted flow record that should control routing
     // in a cell.
     //
@@ -542,15 +529,15 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
             const npsat_trace::CellWellLink *&bestL,
             npsat_trace::WellFlowRecord &bestF) -> bool {
 
-            unsigned int slot = 0;
-            if (!cell_slot(cell, slot))
+            const std::string cell_id = cell->id().to_string();
+            const auto slot = cellid_to_slot.find(cell_id);
+            if (slot == cellid_to_slot.end() || slot->second >= slot_cell_well_links.size())
                 return false;
 
-            const auto &links = slot_cell_well_links[slot];
+            const auto &links = slot_cell_well_links[slot->second];
             if (links.empty())
                 return false;
 
-            const std::uint64_t cell_id_u64 = static_cast<std::uint64_t>(cell->active_cell_index());
             const npsat_trace::CellWellLink *candidateL = nullptr;
             npsat_trace::WellFlowRecord candidateF{};
             double best_dist = std::numeric_limits<double>::infinity();
@@ -574,10 +561,10 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
                 if (require_threshold && (x[2] > L.wtop || x[2] < L.wbot))
                     continue;
 
-                // The transient flow record is keyed by the active cell index
+                // The transient flow record is keyed by the persistent CellId
                 // and the internal well index.  The stored Q values have already
                 // been sign-corrected for forward/backward tracking.
-                const npsat_trace::FlowKey key{cell_id_u64, static_cast<std::uint32_t>(L.well_global_index)};
+                const npsat_trace::FlowKey key{cell_id, L.well_global_index};
                 const auto itF = flows_by_cell_well.find(key);
                 if (itF == flows_by_cell_well.end())
                     continue;
@@ -641,7 +628,7 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
                     if (x[2] > L.wtop || x[2] < L.wbot)
                         continue;
 
-                    const npsat_trace::FlowKey key{cell_id_u64, static_cast<std::uint32_t>(L.well_global_index)};
+                    const npsat_trace::FlowKey key{cell_id, L.well_global_index};
                     const auto itF = flows_by_cell_well.find(key);
                     if (itF == flows_by_cell_well.end())
                         continue;

@@ -5,6 +5,8 @@
 #ifndef NPSAT_V2_TRACE_STRUCTURES_H
 #define NPSAT_V2_TRACE_STRUCTURES_H
 
+#include <functional>
+#include <string>
 
 namespace npsat_trace {
     using namespace dealii;
@@ -202,7 +204,7 @@ namespace npsat_trace {
 
     struct FlowKey
     {
-        std::uint64_t cell_id;
+        std::string cell_id;
         std::uint32_t well_global_index;
 
         bool operator==(const FlowKey &o) const noexcept
@@ -216,7 +218,7 @@ namespace npsat_trace {
         std::size_t operator()(const FlowKey &k) const noexcept
         {
             // simple hash combine
-            std::size_t h1 = std::hash<std::uint64_t>{}(k.cell_id);
+            std::size_t h1 = std::hash<std::string>{}(k.cell_id);
             std::size_t h2 = std::hash<std::uint32_t>{}(k.well_global_index);
             return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
         }
@@ -224,10 +226,6 @@ namespace npsat_trace {
 
     struct WellFlowRecord
     {
-        // Must match the fields read from npsat_v2 particle-well-flow v1 records.
-        std::uint32_t cell_id = 0;
-        std::uint32_t well_global_index = 0;
-        double ze = 0.0;        // if written
         double Qe        = 0.0;
         double Qwbf_bot  = 0.0;
         double Qwbf_top  = 0.0;

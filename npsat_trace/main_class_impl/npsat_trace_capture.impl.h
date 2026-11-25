@@ -64,15 +64,15 @@ npsat_trace::WellCaptureModel &NPSAT_TRACE<dim>::get_or_build_well_capture(
     auto &model=well_capture_cache[slot];
     if (slot >= slot_cell_well_links.size()) return model;
     const auto &links=slot_cell_well_links[slot];
+    const std::string cell_id = cell->id().to_string();
     for (const auto &link : links) {
-        const npsat_trace::FlowKey key{cell->active_cell_index(),link.well_global_index};
+        const npsat_trace::FlowKey key{cell_id, link.well_global_index};
         const auto flow=flows_by_cell_well.find(key);
         AssertThrow(flow != flows_by_cell_well.end(),
                     ExcMessage("Well capture: linked cell/well has no flow record"
                                " (rank=" + std::to_string(my_rank) +
                                ", step=" + std::to_string(flow_step) +
-                               ", CellId=" + cell->id().to_string() +
-                               ", active_cell_index=" + std::to_string(key.cell_id) +
+                               ", CellId=" + key.cell_id +
                                ", well_global_index=" + std::to_string(key.well_global_index) +
                                ", Eid=" + std::to_string(link.eid) + ")."));
         const double q=flow->second.Qe; // already direction-adjusted
