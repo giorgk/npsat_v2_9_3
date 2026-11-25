@@ -75,7 +75,8 @@ private:
   npsat_trace::WellBoreTraceResults<dim> well_bore_flow_trace(const typename DoFHandler<dim>::active_cell_iterator &current_cell, const Point<dim> &x_in, double captured_well = -1.0, bool allow_initial_capture = true) const;
   npsat_trace::WellCaptureModel &get_or_build_well_capture(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
-    npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity);
+    npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity,
+    unsigned int flow_step);
   npsat_trace::CellTrajectoryAtlas<dim> &get_or_build_cell_atlas(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
     npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity_cache,

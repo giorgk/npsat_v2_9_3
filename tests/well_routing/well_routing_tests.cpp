@@ -70,7 +70,7 @@ void column_test(bool backward, bool pumping) {
             cache.init_cache(cell, tracer.rt0_map, tracer.vface, tracer.my_rank,
                 npsat_trace::VelocityInterpolationScheme::cell_idw,
                 options.idw_opt, options.misc_opt, debug, &samples);
-            auto &model = tracer.get_or_build_well_capture(cell, cache);
+            auto &model = tracer.get_or_build_well_capture(cell, cache, 0);
             model.outward[0] = model.outward[1] = 80;
             const Point<3> start(.1, .5, 3.75), end(.9, .5, 3.75);
             const auto first = npsat_trace::capture_physical_segment(model, cache, start, end, 1, 1.0);

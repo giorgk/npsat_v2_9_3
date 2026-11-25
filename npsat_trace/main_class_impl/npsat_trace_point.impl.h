@@ -201,7 +201,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             if (flux_capture) {
               const unsigned int slot = current_cell->user_index();
               if (slot < slot_cell_well_links.size() && !slot_cell_well_links[slot].empty()) {
-                capture_model = &get_or_build_well_capture(current_cell, cached_cell);
+                capture_model = &get_or_build_well_capture(current_cell, cached_cell, step);
                 const bool above_water_table = slot < slot_water_table_elevation.size() &&
                     std::isfinite(slot_water_table_elevation[slot]) &&
                     x[dim-1] > slot_water_table_elevation[slot] + 1.e-10;

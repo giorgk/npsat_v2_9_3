@@ -56,7 +56,8 @@ CaptureHit capture_physical_segment(const WellCaptureModel &model,
 template<int dim>
 npsat_trace::WellCaptureModel &NPSAT_TRACE<dim>::get_or_build_well_capture(
     const typename DoFHandler<dim>::active_cell_iterator &cell,
-    npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity) {
+    npsat_trace::CellVelocityCacheRT0Split3D<dim> &velocity,
+    const unsigned int flow_step) {
     const unsigned int slot=cell->user_index();
     const auto found=well_capture_cache.find(slot);
     if (found != well_capture_cache.end()) return found->second;
@@ -67,7 +68,13 @@ npsat_trace::WellCaptureModel &NPSAT_TRACE<dim>::get_or_build_well_capture(
         const npsat_trace::FlowKey key{cell->active_cell_index(),link.well_global_index};
         const auto flow=flows_by_cell_well.find(key);
         AssertThrow(flow != flows_by_cell_well.end(),
-                    ExcMessage("Well capture: linked cell/well has no flow record."));
+                    ExcMessage("Well capture: linked cell/well has no flow record"
+                               " (rank=" + std::to_string(my_rank) +
+                               ", step=" + std::to_string(flow_step) +
+                               ", CellId=" + cell->id().to_string() +
+                               ", active_cell_index=" + std::to_string(key.cell_id) +
+                               ", well_global_index=" + std::to_string(key.well_global_index) +
+                               ", Eid=" + std::to_string(link.eid) + ")."));
         const double q=flow->second.Qe; // already direction-adjusted
         AssertThrow(std::isfinite(q),ExcMessage("Nonfinite well exchange."));
         if (q >= -1.e-12) continue;
