@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <fstream>
 #include <istream>
+#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include "trace_structures.h"
@@ -529,6 +530,16 @@ namespace npsat_trace {
         // Set up Quadratic: A*v^2 + B*v + C = 0
         double dx = x - a0;
         double dy = y - b0;
+        const double tol = 64.0 * std::numeric_limits<double>::epsilon();
+        const double tol_x = tol * std::max(1.0, std::max(std::abs(x), std::abs(a0)));
+        const double tol_y = tol * std::max(1.0, std::max(std::abs(y), std::abs(b0)));
+        const auto matches_point = [&](double uu, double vv) -> bool
+        {
+            return std::isfinite(uu) && std::isfinite(vv) &&
+                std::abs((a1 + a3*vv)*uu + a2*vv - dx) <= tol_x &&
+                std::abs((b1 + b3*vv)*uu + b2*vv - dy) <= tol_y;
+        };
+
         // If the cell is effectively affine/parallelogram, solve directly:
         if (std::abs(a3) < 1e-14 && std::abs(b3) < 1e-14) {
             const double det = a1*b2 - a2*b1;
@@ -537,7 +548,7 @@ namespace npsat_trace {
 
             u = ( dx*b2 - dy*a2) / det;
             v = (-dx*b1 + dy*a1) / det;
-            return std::isfinite(u) && std::isfinite(v);
+            return matches_point(u, v);
         }
 
         // General bilinear case: eliminate u and solve quadratic for v
@@ -559,8 +570,15 @@ namespace npsat_trace {
             if (disc < 0.0)
                 return false;
             const double sq = std::sqrt(disc);
-            v1 = (-B + sq) / (2.0*A);
-            v2 = (-B - sq) / (2.0*A);
+            if (sq == 0.0) {
+                v1 = v2 = -0.5 * B / A;
+            } else {
+                // Form the root with the larger numerator first. Recover the
+                // other from the product of the roots to avoid cancellation.
+                const double q = -0.5 * (B + std::copysign(sq, B));
+                v1 = std::signbit(B) ? q / A : C / q;
+                v2 = std::signbit(B) ? C / q : q / A;
+            }
         }
 
         auto recover_u = [&](double vv, double &uu) -> bool
@@ -582,8 +600,8 @@ namespace npsat_trace {
         };
 
         double u1 = 0.0, u2 = 0.0;
-        const bool ok1 = recover_u(v1, u1);
-        const bool ok2 = recover_u(v2, u2);
+        const bool ok1 = recover_u(v1, u1) && matches_point(u1, v1);
+        const bool ok2 = recover_u(v2, u2) && matches_point(u2, v2);
 
         if (!ok1 && !ok2)
             return false;
