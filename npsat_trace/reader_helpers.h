@@ -39,11 +39,13 @@ namespace npsat_trace {
     inline void read_vface_rt0_vals_into_vector(
         const std::string &prefix,
         const dealii::IndexSet &owned_now,
-        const MPI_Comm communicator,
+        const dealii::IndexSet &relevant_now,
         const int my_rank,
         const unsigned int step_no,
         const bool coarse_dominated,
         TrilinosWrappers::MPI::Vector &vface) { // must already be reinit(owned,relevant)
+
+        (void)relevant_now;
 
         const std::string filename = vface_rt0_filename(prefix, my_rank, step_no,
                                                         coarse_dominated);
@@ -112,18 +114,18 @@ namespace npsat_trace {
         if (std::abs(checksum_maxabs - h.checksum_maxabs) > tol_max)
             throw std::runtime_error("Checksum maxabs mismatch in file: " + filename);
 
-        // Ghosted Trilinos vectors are read-only. Load into a writable owned
-        // vector in file order, then import the owned and ghost entries.
-        TrilinosWrappers::MPI::Vector owned_vface;
-        owned_vface.reinit(owned_now, communicator);
+        // Clear and scatter owned entries in the same order as written
+        vface = 0.0;
+
+        // Scatter values into owned entries in THE SAME ORDER as written (IndexSet iteration order)
         std::size_t k = 0;
         for (auto it = owned_now.begin(); it != owned_now.end(); ++it, ++k)
         {
             const auto gid = *it;
-            owned_vface[gid] = values[k];
+            vface[gid] = values[k];
         }
-        owned_vface.compress(VectorOperation::insert);
-        vface = owned_vface;
+        vface.compress(VectorOperation::insert);
+        vface.update_ghost_values();
     }
 
 
