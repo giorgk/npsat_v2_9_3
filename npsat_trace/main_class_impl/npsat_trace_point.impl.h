@@ -27,6 +27,8 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
   npsat_trace::ParticleReader reader(topt.n_paticles_parallel);
   if (my_rank == 0)
     reader.open(topt.particles_file);
+  // Keep one stream open per rank across time steps and MPI handoffs.
+  std::ofstream step_debug;
   int iter = 0;
 
   while (true) {
@@ -163,7 +165,20 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
 
           const double Eid = props[npsat_trace::pEid];
           const double Sid = props[npsat_trace::pSid];
-          //std::cout << "Particle Eid: " << Eid << ", Sid: " << Sid << std::endl;
+          const bool debug_step = topt.misc_opt.point_step_debug_eid >= 0 &&
+              Eid == topt.misc_opt.point_step_debug_eid &&
+              Sid == topt.misc_opt.point_step_debug_sid;
+          if (debug_step && !step_debug.is_open()) {
+            const std::string &prefix = topt.misc_opt.dbg_prefix.empty()
+                ? topt.output_prefix : topt.misc_opt.dbg_prefix;
+            const std::string filename = prefix + "_point_step_debug_eid_" +
+                std::to_string(topt.misc_opt.point_step_debug_eid) + "_sid_" +
+                std::to_string(topt.misc_opt.point_step_debug_sid) +
+                "_rank_" + rank_str + ".dat";
+            step_debug.open(filename);
+            AssertThrow(step_debug.good(), ExcMessage("Cannot open point step debug log: " + filename));
+            step_debug << std::scientific << std::setprecision(17);
+          }
 
           double &streamline_steps = props[npsat_trace::pStreamlineSteps];
           double &particle_age = props[npsat_trace::pAge];
@@ -275,6 +290,20 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             u = u/topt.sim_opt.porosity;
             vmag = vmag/topt.sim_opt.porosity;
 
+            if (debug_step)
+              step_debug << "step flow_step=" << step << " time_step_pass=" << completed_time_steps
+                         << " chunk=" << iter << " exchange=" << exchange_iter
+                         << " iteration=" << static_cast<unsigned long long>(streamline_steps)
+                         << " pid=" << static_cast<unsigned long long>(props[npsat_trace::pPid])
+                         << " source_cell=" << current_cell->id().to_string()
+                         << " age=" << particle_age << " remaining=" << dt_remaining
+                         << " dt_eps=" << topt.sim_opt.dt_eps
+                         << " nonexpanding=" << props[npsat_trace::pNoExpandCount]
+                         << " limit=" << max_nonexpanding_steps
+                         << " position=[" << x << "] velocity_forward=[" << u
+                         << "] direction=" << topt.sim_opt.direction << " speed=" << vmag
+                         << " clamped_ref_m11=[" << x_ref << "]\n";
+
             // Write this step
             props[npsat_trace::pVmag] = vmag;
             // Write current location ONLY if velocity is computed
@@ -286,6 +315,9 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             // non-expanding trajectory guard below handles persistent stagnation.
             if (vmag <= stagnant_velocity_threshold) {
               npsat_trace::increment_streamline_nonexpansion(props);
+              if (debug_step)
+                step_debug << "stagnant threshold=" << stagnant_velocity_threshold
+                           << " nonexpanding=" << props[npsat_trace::pNoExpandCount] << std::endl;
               if (max_nonexpanding_steps > 0 && props[npsat_trace::pNoExpandCount] >= static_cast<double>(max_nonexpanding_steps))
               {
                 npsat_trace::write_termination(sl_out,props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_nonexpanding);
@@ -307,9 +339,18 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
                 topt.point_opt.time_step_control;
             const double ds = npsat_trace::compute_step_size_ds<dim>(directional_cell_width,
                                                         vmag, dt_remaining, time_step_size, tsc,is_stuck);
+            if (debug_step)
+              step_debug << "proposal ds=" << ds << " dt=" << ds / vmag
+                         << " max_step=" << tsc.max_step
+                         << " cell_distance_limit=" << directional_cell_width / std::max(1u, tsc.n_steps_per_cell)
+                         << " max_step_time=" << tsc.max_step_time
+                         << " flow_substep_time=" << time_step_size / std::max(1u, tsc.n_steps_per_time)
+                         << " stuck=" << is_stuck << '\n';
 
             if (is_stuck) {
               npsat_trace::increment_streamline_nonexpansion(props);
+              if (debug_step)
+                step_debug << "stuck nonexpanding=" << props[npsat_trace::pNoExpandCount] << std::endl;
               if (max_nonexpanding_steps > 0 &&
                   props[npsat_trace::pNoExpandCount] >= static_cast<double>(max_nonexpanding_steps))
               {
@@ -329,6 +370,36 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             double inside_fraction = 1.0;
             if (flux_capture) {
               const double exit = npsat_trace::capture_cell_fraction(cached_cell, x, x_proposed);
+              if (debug_step) {
+                const MappingQ1<dim> mapping;
+                const auto log_mapping = [&](const char *point_label, const Point<dim> &point) {
+                  step_debug << point_label << " physical=[" << point << ']';
+                  Point<dim> ref;
+                  if (cached_cell.capture_reference_point(point, ref)) {
+                    Point<dim> unit;
+                    for (unsigned int d = 0; d < dim; ++d)
+                      unit[d] = 0.5 * (ref[d] + 1.0);
+                    step_debug << " capture_unit=[" << unit << "] round_trip_error="
+                               << point.distance(cached_cell.capture_physical_point(unit));
+                  } else {
+                    step_debug << " capture_unit=failed";
+                  }
+                  try {
+                    const auto unit = mapping.transform_real_to_unit_cell(current_cell, point);
+                    step_debug << " q1_unit=[" << unit << ']';
+                  } catch (const typename Mapping<dim>::ExcTransformationFailed &) {
+                    step_debug << " q1_unit=failed";
+                  }
+                  step_debug << '\n';
+                };
+                step_debug << "face exit_fraction=" << exit
+                           << " nudge=" << 1.e-8 * current_cell->diameter()
+                           << " source_contains_start=" << current_cell->point_inside(x) << '\n';
+                log_mapping("start", x);
+                log_mapping("unclipped", x_proposed);
+                if (exit < 1.0)
+                  log_mapping("exit", x + exit * (x_proposed - x));
+              }
               if (exit < 1.0) {
                 // End just across the face so existing cell lookup/migration
                 // can continue. Never skip the interior of the next cell.
@@ -412,7 +483,7 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
 
             // Set the new location for the particle
             particle->set_location(x_proposed);
-            npsat_trace::update_streamline_bbox<dim>(props, x_proposed);
+            const bool expanded = npsat_trace::update_streamline_bbox<dim>(props, x_proposed);
             // In the last step for this time step this should be configured so as to return dt_move ~0
             dt_remaining -= dt_move;
             particle_age += dt_move;
@@ -421,7 +492,23 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
             // This checks if the x_proposed is in the current cell.
             // If it's not in search and returns the cell where the particle is currently
             // However this cell can be locally owned or ghosted
+            const bool source_contains_endpoint = debug_step && current_cell->point_inside(x_proposed);
             bool cell_found = npsat_trace::check_cell_point<dim>(current_cell, x_proposed);
+            if (debug_step) {
+              step_debug << "accepted position=[" << x_proposed << "] distance=" << x.distance(x_proposed)
+                         << " dt=" << dt_move << " remaining=" << dt_remaining
+                         << " bbox_expanded=" << expanded
+                         << " nonexpanding=" << props[npsat_trace::pNoExpandCount]
+                         << " source_contains_endpoint=" << source_contains_endpoint
+                         << " destination=";
+              if (cell_found)
+                step_debug << current_cell->id().to_string()
+                           << " destination_owner=" << current_cell->subdomain_id()
+                           << " local=" << current_cell->is_locally_owned();
+              else
+                step_debug << "not_found";
+              step_debug << std::endl;
+            }
 
             if (cell_found) {
               // If it ended up in a ghost (or non-owned) cell, stop tracing here.
@@ -471,6 +558,8 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
 
             if (max_nonexpanding_steps > 0 && props[npsat_trace::pNoExpandCount] >= static_cast<double>(max_nonexpanding_steps))
             {
+              if (debug_step)
+                step_debug << "termination reason=" << npsat_trace::er_nonexpanding << std::endl;
               npsat_trace::write_termination(sl_out, props[npsat_trace::pPid], Eid, Sid, npsat_trace::er_nonexpanding);
               props[npsat_trace::pState] = -1.0;
               dt_remaining = 0.0;

@@ -130,6 +130,8 @@ namespace npsat_trace {
         ("Misc.Dbg_prefix", po::value<std::string>(), "Main prefix for debug files")
         ("Misc.Init_cell_dbg", po::value<int>()->default_value(0), "Enable debug output for cell initialization")
         ("Misc.Particle_traj_dbg", po::value<int>()->default_value(0), "Enable debug output for particle trajectories")
+        ("Misc.Point_step_debug_eid", po::value<int>()->default_value(-1), "Eid for the point step debug log")
+        ("Misc.Point_step_debug_sid", po::value<int>()->default_value(-1), "Sid for the point step debug log")
         ("Misc.Cache_bilinear_coefficients", po::value<int>()->default_value(0), "Cache bilinear map coefficients in initialized cell velocity caches")
 
 
@@ -269,6 +271,11 @@ namespace npsat_trace {
                     tr_opt.misc_opt.dbg_prefix = vm_cfg["Misc.Dbg_prefix"].as<std::string>();
                     tr_opt.misc_opt.init_cell_dbg = vm_cfg["Misc.Init_cell_dbg"].as<int>() != 0;
                     tr_opt.misc_opt.particle_traj_dbg = vm_cfg["Misc.Particle_traj_dbg"].as<int>() != 0;
+                    tr_opt.misc_opt.point_step_debug_eid = vm_cfg["Misc.Point_step_debug_eid"].as<int>();
+                    tr_opt.misc_opt.point_step_debug_sid = vm_cfg["Misc.Point_step_debug_sid"].as<int>();
+                    if ((tr_opt.misc_opt.point_step_debug_eid >= 0) !=
+                        (tr_opt.misc_opt.point_step_debug_sid >= 0))
+                        throw std::runtime_error("Set both point step debug IDs to select a streamline.");
                     tr_opt.misc_opt.cache_bilinear_coefficients = vm_cfg["Misc.Cache_bilinear_coefficients"].as<int>() != 0;
                 }
 

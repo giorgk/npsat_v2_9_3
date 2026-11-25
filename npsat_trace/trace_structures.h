@@ -87,6 +87,8 @@ namespace npsat_trace {
         std::string dbg_prefix;
         bool init_cell_dbg = false;
         bool particle_traj_dbg = false;
+        int point_step_debug_eid = -1;
+        int point_step_debug_sid = -1;
         bool cache_bilinear_coefficients = false;
     };
 
