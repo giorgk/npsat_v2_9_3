@@ -96,7 +96,7 @@ void NPSAT_TRACE<dim>::load_vface_rt0_values_step(const std::string &prefix, con
 {
     npsat_trace::read_vface_rt0_vals_into_vector(prefix,
                                                  locally_owned_dofs,
-                                                 locally_relevant_dofs,
+                                                 mpi_communicator,
                                                  my_rank,
                                                  step_no,
                                                  topt.sim_opt.velocity_interpolation ==
