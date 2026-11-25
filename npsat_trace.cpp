@@ -115,7 +115,6 @@ private:
   std::vector<npsat_trace::CellVelocityCacheRT0Split3D<dim>> all_cells_cache;
   std::vector<bool> all_cells_cache_valid;
   std::unordered_map<unsigned int, npsat_trace::WellCaptureModel> well_capture_cache;
-  unsigned int well_capture_warnings = 0;
   std::vector<npsat_trace::CellTrajectoryAtlas<dim> > all_cell_atlases;
   std::vector<bool> all_cell_atlas_valid;
   std::vector<unsigned int> all_cell_atlas_flow_step;

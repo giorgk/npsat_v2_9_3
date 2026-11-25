@@ -20,5 +20,6 @@ and diverging axial flows, stagnant segments, and inconsistent budgets.
 
 The one- and two-rank runs should report identical outlet counts. Internal
 routing uses a perfectly mixed segment approximation with reproducible spatial
-sampling. It consumes no particle travel time. Existing proximity capture and
-coarse-RT aquifer velocities are not changed or calibrated by these tests.
+sampling. It consumes no particle travel time. The pumping case also checks
+fixed step sampling, capture above a screen endpoint, and rejection of samples
+outside the cell or beyond the step limit.

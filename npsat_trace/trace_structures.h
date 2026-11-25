@@ -70,6 +70,7 @@ namespace npsat_trace {
         double stagnant_velocity_threshold = 1.0e-8;
         double well_capture_distance = 10.0;
         double well_capture_cell_fraction = 0.2;
+        int well_capture_subdivisions = 4;
         double well_influence_q_scale = 1.0;
         double well_influence_max_cell_fraction = 0.45;
         int n_max_proc_exchanges = 100;

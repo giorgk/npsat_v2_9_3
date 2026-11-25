@@ -68,7 +68,6 @@ void NPSAT_TRACE<dim>::distribute_particles(const std::vector<npsat_trace::Parti
 template<int dim>
 void NPSAT_TRACE<dim>::load_data_step(const std::string & file_prefix, unsigned int step) {
     well_capture_cache.clear();
-    well_capture_warnings = 0;
     // Load RT0 face-normal velocities for this step
     load_vface_rt0_values_step(file_prefix, step);
 
@@ -570,10 +569,9 @@ npsat_trace::WellBoreTraceResults<dim> NPSAT_TRACE<dim>::well_bore_flow_trace(
                 if (required_well != any_well && L.well_global_index != required_well)
                     continue;
 
-                // The well link only applies inside the full screened interval
-                // stored in the cell-well map.  Outside it, this well has no
-                // routing effect in this cell.
-                if (x[2] > L.wtop || x[2] < L.wbot)
+                // Legacy proximity capture requires a point within the screen
+                // elevations. Flow-weighted capture may enter at a screen end.
+                if (require_threshold && (x[2] > L.wtop || x[2] < L.wbot))
                     continue;
 
                 // The transient flow record is keyed by the active cell index

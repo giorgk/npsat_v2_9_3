@@ -1727,7 +1727,9 @@ namespace npsat_trace {
         try
         {
             MappingQ1<dim> mapping;
-            x_ref = mapping.transform_real_to_unit_cell(cell, x_phys);
+            const auto unit = mapping.transform_real_to_unit_cell(cell, x_phys);
+            for (unsigned int d = 0; d < dim; ++d)
+                x_ref[d] = 2.0 * unit[d] - 1.0;
             return true;
         }
         catch (const dealii::ExceptionBase &)

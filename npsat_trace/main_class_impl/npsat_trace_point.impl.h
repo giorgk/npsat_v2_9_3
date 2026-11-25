@@ -356,8 +356,8 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
               }
               const double limit = std::min(inside_fraction,stop_fraction);
               const auto hit = npsat_trace::capture_physical_segment(*capture_model,cached_cell,
-                  x,x+limit*(x_proposed-x));
-              const double fraction = limit*hit.fraction;
+                  x, x_proposed, topt.sim_opt.well_capture_subdivisions, limit);
+              const double fraction = hit.fraction;
               if (hit.well>=0 && (fraction<stop_fraction || stop_fraction==1.0)) {
                 const auto entry = x+fraction*(x_proposed-x);
                 particle->set_location(entry);
@@ -509,16 +509,22 @@ void NPSAT_TRACE<dim>::run_point_tracing() {
         // 2) Global check: is THIS step finished for all particles?
         // --------------------------------------------------------
         const unsigned int not_done_global = Utilities::MPI::sum(not_done_local, mpi_communicator);
+
+        // set_location() does not update ParticleHandler cell membership.
+        // Synchronize even when every particle completed this time step, so
+        // the next velocity step starts in the current cell. This also moves
+        // particles whose final substep entered a ghost cell to their owner.
+        // All ranks must participate, including ranks with no unfinished particles.
+        particle_handler.sort_particles_into_subdomains_and_cells();
+
         if (not_done_global == 0)
         {
           break;
         }
 
         // --------------------------------------------------------
-        // 3) Exchange/migrate particles that moved out of subdomain
+        // 3) Count exchanges needed to finish this time step
         // --------------------------------------------------------
-        particle_handler.sort_particles_into_subdomains_and_cells();
-
         ++exchange_iter;
 
         const unsigned int max_proc_exchanges = static_cast<unsigned int>(std::max(1, topt.sim_opt.n_max_proc_exchanges));

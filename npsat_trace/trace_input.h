@@ -83,6 +83,7 @@ namespace npsat_trace {
         ("Simulation.StagnantVelocityThreshold", po::value<double>()->default_value(1.0e-8), "Velocity magnitude below which a particle is stagnant for the current time step")
         ("Simulation.WellCaptureDistance", po::value<double>()->default_value(10.0), "Near-well distance that always triggers a well-flow check")
         ("Simulation.WellCaptureCellFraction", po::value<double>()->default_value(0.2), "Near-well check distance as a fraction of cell diameter")
+        ("Simulation.WellCaptureSubdivisions", po::value<int>()->default_value(4), "Number of equal subdivisions for flow-weighted well capture")
         ("Simulation.WellInfluenceQScale", po::value<double>()->default_value(1.0), "Well influence radius multiplier applied to sqrt(abs(Qe))")
         ("Simulation.WellInfluenceMaxCellFraction", po::value<double>()->default_value(0.45), "Maximum well influence radius as a fraction of cell diameter")
         ("Simulation.MaxProcessorExchanges", po::value<int>()->default_value(100), "Maximum particle exchanges per time step")
@@ -179,6 +180,9 @@ namespace npsat_trace {
                     tr_opt.sim_opt.stagnant_velocity_threshold = std::max(0.0, vm_cfg["Simulation.StagnantVelocityThreshold"].as<double>());
                     tr_opt.sim_opt.well_capture_distance = vm_cfg["Simulation.WellCaptureDistance"].as<double>();
                     tr_opt.sim_opt.well_capture_cell_fraction = vm_cfg["Simulation.WellCaptureCellFraction"].as<double>();
+                    tr_opt.sim_opt.well_capture_subdivisions = vm_cfg["Simulation.WellCaptureSubdivisions"].as<int>();
+                    if (tr_opt.sim_opt.well_capture_subdivisions < 1)
+                        throw std::runtime_error("Simulation.WellCaptureSubdivisions must be at least one.");
                     tr_opt.sim_opt.well_influence_q_scale = vm_cfg["Simulation.WellInfluenceQScale"].as<double>();
                     tr_opt.sim_opt.well_influence_max_cell_fraction = vm_cfg["Simulation.WellInfluenceMaxCellFraction"].as<double>();
                     tr_opt.sim_opt.n_max_proc_exchanges = vm_cfg["Simulation.MaxProcessorExchanges"].as<int>();

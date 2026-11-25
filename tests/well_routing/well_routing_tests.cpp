@@ -56,6 +56,41 @@ void column_test(bool backward, bool pumping) {
         flow.Qwbf_top = sign * (pumping ? 25 * (segment + 1) : top[segment]);
         tracer.flows_by_cell_well[{cell->active_cell_index(), 0}] = flow;
     }
+    if (pumping && !backward) {
+        for (const auto &cell : tracer.dof_handler_flux.active_cell_iterators()) {
+            if (!cell->is_locally_owned() || cell->center()[2] < 3.0) continue;
+            const unsigned int slot = tracer.cellid_to_slot.at(cell->id().to_string());
+            auto &link = tracer.slot_cell_well_links[slot].front();
+            link.wtop = 3.65;
+            cell->set_user_index(slot);
+
+            npsat_trace::CellVelocityCacheRT0Split3D<3> cache;
+            const std::vector<npsat_trace::CellVelocitySample<3>> samples(1);
+            std::ofstream debug;
+            cache.init_cache(cell, tracer.rt0_map, tracer.vface, tracer.my_rank,
+                npsat_trace::VelocityInterpolationScheme::cell_idw,
+                options.idw_opt, options.misc_opt, debug, &samples);
+            auto &model = tracer.get_or_build_well_capture(cell, cache);
+            model.outward[0] = model.outward[1] = 80;
+            const Point<3> start(.1, .5, 3.75), end(.9, .5, 3.75);
+            const auto first = npsat_trace::capture_physical_segment(model, cache, start, end, 1, 1.0);
+            const auto fourths = npsat_trace::capture_physical_segment(model, cache, start, end, 4, 1.0);
+            require(first.well < 0 && fourths.well == 0 && fourths.fraction == .5,
+                    "four samples must detect an interior hit above the screen");
+            const auto clipped = npsat_trace::capture_physical_segment(model, cache, start, end, 4, .4);
+            require(clipped.well < 0, "samples beyond the step limit must be skipped");
+            const auto route = tracer.well_bore_flow_trace(cell, Point<3>(.5, .5, 3.75),
+                                                           model.wells[fourths.well].id, false);
+            require(route.terminate && route.end_reason == npsat_trace::er_well_captured,
+                    "capture above the screen must route through the selected well");
+            model.outward[0] = model.outward[1] = 0;
+            const auto outside = npsat_trace::capture_physical_segment(
+                model, cache, start, Point<3>(1.1, .5, 3.75), 1, 1.0);
+            require(outside.well < 0, "sample across the cell face must be skipped");
+            link.wtop = 4;
+            tracer.well_capture_cache.erase(slot);
+        }
+    }
     tracer.setup_triangulation_helpers();
     tracer.setup_particles();
     std::vector<npsat_trace::ParticleSeed> seeds;
